@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contract Scope · The Gold Reserve</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="nav"><a href="/" class="brand">◆ The Gold Reserve</a><nav><a href="/">Home</a><a href="/docs/SCOPE.md">Raw markdown</a></nav></header>
+<main class="doc">
+<h1 id="the-gold-reserve-on-vicefuncom-contract-scope">The Gold Reserve on vicefun.com: Contract Scope</h1>
+<p><em>Draft v0.3, Oct 6, 2026. Tagline: TBD (&quot;Held forever.&quot; retired; proposal: &quot;Redeemable in gold.&quot; See §4 &quot;Also&quot;).</em>
+<em>Labels: <strong>[C]</strong> = confirmed (source given), <strong>[A]</strong> = assumption, <strong>[E]</strong> = estimate.</em></p>
+<h3 id="changelog">Changelog</h3>
+<ul>
+<li><strong>v0.3 (Oct 6, 2026)</strong><ul>
+<li><strong>Stake to build, not burn to build.</strong> Placing a Gold Mine or Vault Shaft now <em>locks</em> <code>$RESERVE</code> inside an owned <code>Building</code> object. Players get the full stake back by demolishing after the round closes. Moves and surveys cost a small <strong>SUI fee paid into the round&#39;s rewards pot</strong> instead of a token burn (§2 Package 3, §8).</li>
+<li><strong>Anti-exploit rules for staking:</strong> score is time-weighted inside the round (anti flash-stake), stakes cannot leave before close (no flash loans, no double use across rounds), per-address stake escalation plus own-mine-only vein bonus (anti-whale / anti-sybil). Score is <em>not</em> weighted by stake size (§8.5).</li>
+<li><strong>D1 decided: redeemable vault.</strong> Any holder can burn <code>$RESERVE</code> for a pro-rata share of vault XAUm. Denominator = circulating supply, which excludes tokens sitting in the locked Bluefin LP position (§2 Package 1, §2.1). 1.5% redemption fee stays in the vault, plus a per-24h global cap and an opening gate. The &quot;held forever / no withdraw&quot; framing is removed.</li>
+<li><strong>Router burn slice removed.</strong> Suggested split goes from 70/15/10/5 to <strong>75 reserve / 20 rewards / 0 burn / 5 ops</strong>. <code>gold_ops::burner</code> dropped (D2).</li>
+<li><strong>D5 is now required:</strong> redemption needs the one-line Arena <code>mint_lock_total_supply</code> view.</li>
+<li>Money-flow diagram, risks, build plan (<strong>~5–7 weeks pre-audit</strong>, up from 4–5.5) and decisions (new D9–D14) updated.</li>
+</ul>
+</li>
+<li>v0.2: added the Compound skill game (burn-to-place), FeeRouter rewards leg, D6–D8.</li>
+<li>v0.1: vault + router + accumulator scope.</li>
+</ul>
+<hr>
+<h2 id="0-tldr">0. TL;DR</h2>
+<ul>
+<li><strong>vicefun.com is Vice, the live deployment of your own repo <code>aidaonsui-collab/the-arena</code>.</strong> [C] The live <code>index.html</code> is byte-identical to the repo&#39;s <code>index.html</code> (curl + <code>cmp</code>, Oct 6 2026). It runs on <strong>Sui mainnet</strong>. The Move package type origin is <code>0x5cfd…bdea</code>, the current call package is v25 <code>0x6c9a…da59</code>, and the Config object is <code>0xcd52…5d2c</code>.</li>
+<li><strong>Because of that, we are not working around a black box. We can read and, if needed, upgrade the launchpad.</strong> The recommended path (<strong>Option A</strong>) needs <strong>one tiny Arena change</strong>: a public <code>mint_lock_total_supply</code> view, which redemption now depends on (D5). Everything else sits in our own contracts, which get paid through the existing <code>set_beneficiary</code> hook.</li>
+<li><strong>A Vice token is a plain template <code>Coin&lt;T&gt;</code>.</strong> [C] It has no transfer hooks or tax, and its supply is fixed at 1B with 9 decimals. Its <code>CoinMetadata</code> is frozen and its <code>TreasuryCap</code> is locked forever inside <code>InstadexMintLock&lt;T&gt;</code>, so nobody can mint more. <strong>All reserve logic must live in separate contracts funded by the LP-fee &quot;creator&quot; share.</strong> The rebase and swap-tax mechanics from <code>gold-reserve</code> (Robinhood Chain / Uniswap v4) <strong>cannot be ported</strong>. Only the vault, keeper and oracle-floor patterns carry over.</li>
+<li><strong>The XAUm vault is redeemable (D1 decided).</strong> Burn <code>$RESERVE</code>, receive <code>vault_xaum × burned / circulating_supply</code> minus a 1.5% fee that stays in the vault. Circulating supply excludes the unsold tokens inside the locked LP position. The fee means every redemption <em>raises</em> the per-token backing of everyone who stays. If the pool price drops below backing, arbitrageurs buy and redeem, which supports the price.</li>
+<li><strong>XAUm on Sui is a regulated coin.</strong> [C] On-chain there is a <code>DenyCapV2&lt;XAUM&gt;</code> with <code>allow_global_pause = true</code>. Matrixdock can freeze addresses and pause the coin globally. A pause stops redemptions; the vault design has to account for this.</li>
+<li><strong>Skill game (&quot;Compound&quot;):</strong> a timed placement game on a fixed grid. Players <strong>stake</strong> (lock) <code>$RESERVE</code> to place mines and shafts and get it back after the round. Nothing in the game burns tokens. Round rewards come from a <strong>fee-router rewards slice</strong> (trading fees) plus small SUI move/survey fees, never from the XAUm vault. Demo at <a href="https://lagoon-nova-berry-dove.grok.me">https://lagoon-nova-berry-dove.grok.me</a> is idle-builder simulation only. On-chain, buildings cannot mint yield.</li>
+</ul>
+<hr>
+<h2 id="1-what-vicefun-provides-vs-what-we-build">1. What vicefun provides vs. what we build</h2>
+<h3 id="11-vicefun-vice-mechanics-instant-launch-path-the-current-default">1.1 vicefun / Vice mechanics (Instant launch path, the current default)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Finding</th>
+<th>Status / source</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Chain</td>
+<td>Sui mainnet</td>
+<td>[C] site meta &quot;Fair launches on Sui&quot;; suiscan links; <code>the-arena/README.md</code></td>
+</tr>
+<tr>
+<td>Token creation</td>
+<td>Pad publishes a bytecode-patched <strong>template coin</strong>: 1B supply, 9 decimals, <code>CoinMetadata</code> <strong>frozen</strong>, all supply minted to the creator. The launch fn takes any <code>TreasuryCap&lt;T&gt;</code> + <code>CoinMetadata&lt;T&gt;</code>, so a custom coin module is possible via a direct PTB, but the cap is consumed, so it doesn&#39;t help</td>
+<td>[C] <code>contracts/coin-template/sources/template.move</code>, <code>api/coin-module.js</code>, pad copy &quot;Fixed at launch. 1B supply · 9 decimals · 1 SUI fee · 0 quote LP · starting cap ≈ $4.5k&quot;</td>
+</tr>
+<tr>
+<td>Curve</td>
+<td><strong>No curve on Instant.</strong> 100% of supply goes single-sided into a <strong>Bluefin Spot CLMM</strong> pool in block one, with 0 quote. Position range = <code>[floor(ideal start tick), max tick]</code>, pool initialised <em>at</em> the lower tick, so the position starts 100% token and converts token→SUI as buyers push price up. Start price comes from <code>Config.instant_virtual_quote&lt;Q&gt;</code> (~$4.5k start FDV). The legacy bonding curve (graduates at 2,000 SUI or 1 XAUM to Bluefin) still exists on-chain</td>
+<td>[C] <code>contracts/README.md</code>, <code>PUBLISHED.md</code>, <code>bluefin.move::instant_range</code></td>
+</tr>
+<tr>
+<td>Quote pairs</td>
+<td>SUI, VICEFUN, WAL, DEEP, NS, SCA, BLUE, <strong>XAUM (&quot;Gold&quot;)</strong>, XAGM, USDY, AXOL, LOFI, MANIFEST, ZUK</td>
+<td>[C] <code>CREATE_QUOTES</code> in live bundle</td>
+</tr>
+<tr>
+<td>Mint authority</td>
+<td><code>TreasuryCap&lt;T&gt;</code> is moved into shared <code>InstadexMintLock&lt;T&gt;</code>. There is no mint and no extract. <strong><code>launch::burn_from_mint_lock</code> is public and permissionless</strong>, so anyone can burn <code>Coin&lt;T&gt;</code> and reduce supply. <strong><code>mint_lock_supply</code> (total supply view) exists but is <code>#[test_only]</code></strong></td>
+<td>[C] <code>launch.move</code> L1972–1981</td>
+</tr>
+<tr>
+<td>LP</td>
+<td>Position NFT sits in <code>BluefinPositionLock</code> with <code>unlock_ms = 0</code> (<strong>permanent</strong>). <code>claim_bluefin_position</code> aborts. No public accessor borrows the <code>Position</code>, and nobody can add or remove liquidity on it, so its liquidity <code>L</code> and tick range are <strong>constant forever</strong></td>
+<td>[C] <code>lock.move</code> L61–68, L559, L730–734</td>
+</tr>
+<tr>
+<td>Pool fee</td>
+<td>Bluefin <code>fee_rate</code> = 2% (v17+). Bluefin protocol keeps <del>20%, so **</del>1.6% of swap input** reaches the position</td>
+<td>[C] <code>PUBLISHED.md</code> v17 + IDEX smoke tx</td>
+</tr>
+<tr>
+<td>Token-side fees (sells)</td>
+<td><strong>Burned</strong> via the mint lock (Arena rule; not ours to change without Option B)</td>
+<td>[C]</td>
+</tr>
+<tr>
+<td>Quote-side fees (buys)</td>
+<td>Split per lock by <code>LockLpSplit{creator, platform, pit/rewards, buyback}</code>. Set once at launch. On-chain rule: sum = 10,000 and platform ≥ 500 bps. Pad presets: Vice 60/5/30/5, Creator 80/5/10/5, Holders 40/5/50/5. The pad slider lets creator go up to <code>10000 − platform − buyback</code></td>
+<td>[C] <code>lock.move</code> <code>new_lp_split</code>, pad presets</td>
+</tr>
+<tr>
+<td>Where creator fees go</td>
+<td><code>transfer::public_transfer</code> to <code>lock.beneficiary</code> (an <code>address</code>). <strong>The beneficiary can change it with <code>set_beneficiary(lock, new_addr)</code></strong>, and so can the platform via <code>admin_set_beneficiary</code> (AdminCap)</td>
+<td>[C] <code>lock.move</code> L608–631, L737–761</td>
+</tr>
+<tr>
+<td>Collect</td>
+<td><code>launch::collect_instadex_fees&lt;T,Q&gt;</code> is <strong>permissionless</strong> (it needs the official <code>Pit&lt;Q&gt;</code> arg). The platform keeper skips plain locks after the &quot;pit sunset&quot; on 2026-09-28, <strong>so we run our own poke</strong></td>
+<td>[C] <code>launch.move</code> L1627, <code>keepers/README.md</code></td>
+</tr>
+<tr>
+<td>Fees to platform</td>
+<td>1 SUI launch fee plus the platform bps, withdrawn with AdminCap to <code>0x92a3…658b</code></td>
+<td>[C]</td>
+</tr>
+<tr>
+<td>Upgradeability</td>
+<td>Arena UpgradeCap <code>0x8db3…3608</code> is held by the platform wallet. Policy: <strong>Compatible</strong>. 24 upgrades (v2→v25) between 2026-08-29 and 2026-09-28</td>
+<td>[C] <code>PUBLISHED.md</code></td>
+</tr>
+<tr>
+<td>Docs / SDK</td>
+<td>No public docs or SDK. The repo READMEs are the docs. X: <code>@ViceFun</code>; TG: <code>t.me/ViceFun</code> (399 members)</td>
+<td>[C] site, web search. X API was not reachable from here</td>
+</tr>
+<tr>
+<td>Who operates it</td>
+<td>Your repo, platform wallet <code>0x92a3…658b</code></td>
+<td>[A] that you or your team hold the AdminCap and UpgradeCap. <strong>Please confirm</strong></td>
+</tr>
+</tbody></table>
+<h3 id="12-the-plain-consequence">1.2 The plain consequence</h3>
+<p>A Vice coin is a standard Sui coin with no hooks. The protocol never sees transfers or trades except through the LP-fee split. So:</p>
+<ul>
+<li><strong>Funding source = the creator share of quote-side LP fees</strong> (plus optional donations). With a SUI pair at 80% creator, the reserve gets about <strong>1.28% of buy-side SUI volume</strong> [C math, E rate]. At 90% creator (5/5/0 for the others) it gets about 1.44%. With the skill-game rewards leg, that creator share is further split inside the FeeRouter (see §2 / §8).</li>
+<li><strong>Sells don&#39;t fund anything.</strong> Their fee is in the token and Arena burns it. That is still deflationary, just not reserve income.</li>
+<li><strong>Gold-backed price support comes from a separate, redeemable vault.</strong> It cannot come from token logic. The redemption right is what turns &quot;backing&quot; into a real floor: anyone can always swap tokens for their share of the gold.</li>
+<li><strong>Gameplay payouts come only from the rewards pot</strong> (FeeRouter rewards slice + SUI move/survey fees). Buildings never mint USDC/XAUm and never touch the vault. Player stakes are held in their own <code>Building</code> objects and are always returned.</li>
+</ul>
+<h3 id="13-two-integration-options">1.3 Two integration options</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Option A, beneficiary hook (recommended)</strong></th>
+<th>Option B, Arena-native &quot;reserve&quot; launch mode</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>How</td>
+<td>Launch normally. Then <code>set_beneficiary(lock, &lt;FeeRouter object address&gt;)</code>. Coins arrive as transfer-to-object and our module pulls them with <code>transfer::public_receive</code></td>
+<td>Compatible Arena upgrade adds a <code>ReserveKey</code> DF and a collect variant that routes the slice straight into the vault (same pattern as <code>holder_yield</code> and moonbags V14 <code>set_pool_backing</code>)</td>
+</tr>
+<tr>
+<td>Arena changes</td>
+<td><strong>One required view</strong> for redemption: <code>public fun mint_lock_total_supply&lt;T&gt;(&amp;InstadexMintLock&lt;T&gt;): u64</code> (today <code>mint_lock_supply</code> is <code>#[test_only]</code>). Optional second view exposing the locked position&#39;s <code>(liquidity, tick_lower, tick_upper)</code> so the vault can verify them on-chain instead of pinning them (D5)</td>
+<td>New module, new collect path, audit of Arena delta</td>
+</tr>
+<tr>
+<td>Coupling</td>
+<td>Low. Still depends on <code>admin_set_beneficiary</code> not being used against us</td>
+<td>High. Reserve trust is tied to the Arena UpgradeCap</td>
+</tr>
+<tr>
+<td>Two-tx gap</td>
+<td>Yes. Launch, then <code>set_beneficiary</code> in the next tx, because a shared lock created in a tx can&#39;t be mutated in the same PTB. Launch-time residuals and the first moments of fees go to the launcher wallet, which forwards them manually</td>
+<td>No</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="2-proposed-contract-set-sui-move">2. Proposed contract set (Sui Move)</h2>
+<p><strong>Split packages so the redemption promise is credible.</strong> On Sui, an upgrade can add a function to an existing module that reads its structs, so an upgradeable vault could later gain an admin <code>withdraw</code> or a worse redemption formula. The vault therefore goes in its own tiny package, and its <strong>UpgradeCap is destroyed</strong> (<code>package::make_immutable</code>) after audit. The <em>only</em> outflow that will ever exist is the published <code>redeem</code> formula. Game and rewards modules are upgradeable with the ops package (or a sibling <code>gold_game</code> package) until frozen or restricted (D4).</p>
+<h3 id="package-1-gold_vault-immutable">Package 1: <code>gold_vault</code> (immutable)</h3>
+<p><strong><code>gold_vault::reserve</code></strong> holds XAUm.</p>
+<ul>
+<li>State: <code>GoldReserve&lt;phantom T&gt; { id, xaum: Balance&lt;XAUM&gt;, total_in: u64, deposits: u64, total_redeemed: u64, total_burned: u64, fees_retained: u64, epoch_start_ms: u64, epoch_base: u64, epoch_out: u64, opens_ms: u64, created_ms }</code> (shared). XAUm is held as a <strong><code>Balance</code> inside a shared object</strong>, never as address-owned <code>Coin</code>.</li>
+<li>Pinned at creation (immutable, publicly verifiable against the chain before <code>make_immutable</code>): <code>mint_lock_id</code>, <code>pool_id</code>, <code>lp_lock_id</code>, <code>lp_liquidity: u128</code>, <code>lp_tick_lower</code>, <code>lp_tick_upper</code>. These are constant forever because the locked position can&#39;t be modified (§1.1 LP row).</li>
+<li>Entry / public functions:<ul>
+<li><code>deposit(reserve, Coin&lt;XAUM&gt;)</code>: permissionless (fees, donations, anyone). Emits <code>Deposited{from, amount, total}</code>.</li>
+<li><strong><code>redeem&lt;T,Q&gt;(reserve, &amp;mut InstadexMintLock&lt;T&gt;, &amp;Pool&lt;T,Q&gt;, &amp;DenyList, Coin&lt;T&gt;, min_out, clock, ctx): Coin&lt;XAUM&gt;</code></strong>: permissionless. Steps:<ol>
+<li>Assert <code>now ≥ opens_ms</code> and <code>reserve_xaum ≥ OPEN_MIN_XAUM</code> (opening gate, D9). Assert object IDs match the pinned mint lock and pool.</li>
+<li>Assert XAUm is not globally paused and the sender is not on the XAUm deny list for the current epoch (<code>coin::deny_list_v2_is_global_pause_enabled_current_epoch&lt;XAUM&gt;</code>, <code>coin::deny_list_v2_contains_current_epoch&lt;XAUM&gt;</code> [A: verify exact fn names]). Otherwise abort <strong>before</strong> anything is burned, so nobody burns tokens for gold they can&#39;t use.</li>
+<li>Compute <code>C = circulating()</code> (§2.1) <strong>before</strong> the burn. <code>gross = xaum × x / C</code> (u128, round down). <code>fee = ceil(gross × REDEEM_FEE_BPS / 10_000)</code>. <code>out = gross − fee</code>. Assert <code>out ≥ min_out</code> (caller slippage guard, since deposits and other redemptions can land first) and <code>x ≥ MIN_REDEEM</code>.</li>
+<li>Roll the 24h window if expired (<code>epoch_base = xaum</code>, <code>epoch_out = 0</code>). Assert <code>epoch_out + out ≤ epoch_base × EPOCH_CAP_BPS / 10_000</code> and <code>out ≤ xaum × TX_CAP_BPS / 10_000</code>.</li>
+<li>Burn the <code>Coin&lt;T&gt;</code> via <code>launch::burn_from_mint_lock</code>. Split <code>out</code> from the balance and return it as <code>Coin&lt;XAUM&gt;</code> (composable, so arbitrage PTBs can buy → redeem → sell in one tx). <code>fee</code> never leaves. Emit <code>Redeemed{who, burned: x, out, fee, circulating_before: C, xaum_after}</code>.</li>
+</ol>
+</li>
+<li>Views: <code>reserve_xaum()</code>, <code>total_in()</code>, <code>circulating(mint, pool)</code>, <code>backing_per_token(mint, pool)</code> (= <code>xaum / C</code>, scaled), <code>quote_redeem(x)</code>, <code>epoch_remaining()</code>.</li>
+</ul>
+</li>
+<li>Constants (hard-coded, the package is immutable, D9): <code>REDEEM_FEE_BPS = 150</code>, <code>EPOCH_MS = 86_400_000</code>, <code>EPOCH_CAP_BPS = 300</code> (3% of the vault per 24h, global), <code>TX_CAP_BPS = 100</code>, <code>OPEN_MIN_XAUM</code> ≈ 1 XAUm, <code>opens_ms</code> = launch + 7 days, <code>MIN_REDEEM</code> (dust guard) [A, all tunable before publish].</li>
+<li>Admin: none. No caps, no pause. Immutable after publish. Note: no pause also means a found bug can&#39;t be stopped, which is why the caps exist and why the audit focuses here.</li>
+<li><strong>Gameplay never drains this vault.</strong> Inflows: FeeRouter reserve slice → accumulator → XAUm, plus donations and the retained redemption fees. The single outflow: <code>redeem</code>, paid only against burned tokens.</li>
+</ul>
+<h4 id="21-the-redemption-denominator-why-quotcirculatingquot-and-how-to-compute-it">2.1 The redemption denominator (why &quot;circulating&quot; and how to compute it)</h4>
+<p>The 1B supply is not all &quot;out there&quot;. On Instant launch, 100% of it went one-sided into the locked Bluefin position. Tokens only reach holders when someone buys them out of that position, and they go back in when someone sells. The tokens still inside the locked position are <strong>nobody&#39;s claim</strong>: they can never be withdrawn (LP locked forever), only sold into. So:</p>
+<pre><code>S      = mint_lock_total_supply()          // 1B minus every burn (sell-fee burns, VICEFUN path, redemptions…)
+LP_tok = token amount inside OUR locked position at the current pool price
+C      = S − LP_tok                        // circulating = held by wallets, game buildings, other LPs, CEX, etc.
+payout = xaum × burned / C × (1 − fee)
+</code></pre>
+<p><code>LP_tok</code> comes from standard CLMM math, using the pinned <code>L</code>, <code>sqrt_lower</code>, <code>sqrt_upper</code> and the pool&#39;s current <code>sqrt_price</code> (Bluefin <code>pool::current_sqrt_price</code> [A: verify getter name]). Token is coin A:</p>
+<table>
+<thead>
+<tr>
+<th>Pool price</th>
+<th><code>LP_tok</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>sqrtP ≤ sqrt_lower</code> (back at launch price or below)</td>
+<td><code>L × (sqrt_upper − sqrt_lower) / (sqrt_lower × sqrt_upper)</code> (position all token)</td>
+</tr>
+<tr>
+<td>in range (normal case, upper = max tick)</td>
+<td><code>L × (sqrt_upper − sqrtP) / (sqrtP × sqrt_upper)</code> ≈ <code>L / sqrtP</code></td>
+</tr>
+<tr>
+<td><code>sqrtP ≥ sqrt_upper</code> (unreachable in practice)</td>
+<td>0</td>
+</tr>
+</tbody></table>
+<p>Round <code>LP_tok</code> <strong>down</strong> so <code>C</code> is rounded up and payouts round down. Every rounding error favours the holders who stay.</p>
+<p><strong>Wrong denominators, and why:</strong></p>
+<ul>
+<li><strong>Total supply</strong> (the v0.2 V2 sketch): early on most supply is still unsold in the LP, so a holder would get only a fraction of their fair share. The rest of the gold would be stranded behind tokens nobody can ever redeem.</li>
+<li><strong>Total supply − tokens in the pool object</strong> (pool <code>coin_a</code> reserve): this would also subtract tokens owned by <strong>third-party LPs</strong> (anyone can open a position in a public Bluefin pool) and Bluefin&#39;s protocol-fee tokens. Both are real claims that can later come out and redeem, so <code>C</code> would be understated and early redeemers would be <strong>overpaid</strong> at the expense of later ones.</li>
+<li><strong>Total supply − 1B &quot;initial LP&quot;</strong> (a static number): the LP&#39;s token balance shrinks as buyers take tokens out. A static subtraction is wrong after the first buy.</li>
+</ul>
+<p><strong>Small conservative gaps (accepted):</strong></p>
+<ul>
+<li>Token-side fees the locked position has earned but not yet collected sit in the pool and will be burned by Arena on collect. We don&#39;t subtract them (no clean getter), so <code>C</code> is slightly <em>overstated</em> and payouts slightly <em>understated</em>. That&#39;s safe, and the keeper&#39;s regular collect poke keeps the gap small. Our keeper can also bundle <code>collect_instadex_fees</code> before large redemptions.</li>
+<li>Tokens sent to dead addresses, or the launcher bag if it is never burned, still count as circulating. Also conservative.</li>
+<li><strong>Tokens staked in game buildings count as circulating.</strong> They belong to players and come back after the round, so their share of the gold is preserved. They just can&#39;t be redeemed while locked.</li>
+</ul>
+<p><strong>Why spot-price manipulation doesn&#39;t break this:</strong> <code>LP_tok</code> depends on the current pool price, but it only changes when tokens <em>physically</em> move in or out of the locked position. If someone dumps X tokens to push the price down, <code>LP_tok</code> rises by about X and their own balance falls by X. <code>C</code> still equals &quot;tokens held by everyone except the locked position&quot;. The sum of every holder&#39;s possible claim never exceeds the vault, and no in-tx price move lets you redeem more than the tokens you actually hold. Buying cheap tokens and redeeming them is allowed; that&#39;s the intended floor arbitrage (§2.2).</p>
+<h4 id="22-floor-and-arbitrage">2.2 Floor and arbitrage</h4>
+<ul>
+<li><strong>Backing per token</strong> <code>F = xaum / C</code> (in XAUm). <strong>Redemption value</strong> = <code>F × (1 − 1.5%)</code>.</li>
+<li><strong>Each redemption raises F for everyone else.</strong> After redeeming x: <code>F&#39; = F × (C − (1 − f)·x) / (C − x) ≥ F</code>. A rush to the exit doesn&#39;t hurt the people who stay, so there is no first-mover advantage like in a fractional bank run. The caps exist for bug containment and issuer events, not solvency.</li>
+<li><strong>Arbitrage:</strong> if the pool price (in XAUm terms) drops below about <code>F × (1 − 1.5%) / (1 + 2% pool fee + slippage)</code>, which is roughly <strong>96% of backing</strong> [E], an arber buys from the pool and redeems in one PTB. That buy pays the 2% pool fee (part of it flows back to the router and into the vault and rewards), pushes the price back up, and burns the tokens. <strong>Floor support is automatic and needs no keeper or oracle.</strong></li>
+<li><strong>When the floor binds:</strong> <code>F</code> vs. price is basically <em>vault value vs. circulating market cap</em>. The vault grows with buy <strong>volume</strong>, while circulating cap tracks <strong>net</strong> holding. With heavy churn (lots of round-trip trading), backing can catch up to the price and the floor starts to bind. With pure net buying, price stays well above backing.</li>
+<li><strong>Redemption is oracle-free.</strong> It&#39;s a ratio in XAUm units, so Pyth staleness or manipulation can&#39;t touch the outflow. Oracles only appear on the deposit side (accumulator), where the worst case is a bounded bad fill.</li>
+</ul>
+<h3 id="package-2-gold_ops-upgradeable-at-first-then-frozen-or-additive-only">Package 2: <code>gold_ops</code> (upgradeable at first, then frozen or additive-only)</h3>
+<p><strong><code>gold_ops::router</code></strong> is the FeeRouter and the beneficiary target.</p>
+<ul>
+<li>State: <code>FeeRouter { id, pending_sui: Balance&lt;SUI&gt;, reserve_bps, rewards_bps, ops_bps, ops_addr, lifetime_in: u64, reserve_id: ID, rewards_id: ID }</code> (shared). Its object address is what gets set as the lock beneficiary. <em>(v0.3: <code>burn_bps</code> removed.)</em></li>
+<li>Entry functions:<ul>
+<li><code>receive&lt;C&gt;(router, Receiving&lt;Coin&lt;C&gt;&gt;)</code>: permissionless. Pulls transfer-to-object coins. SUI is split by bps into <code>pending_reserve</code>, <code>pending_rewards</code> and <code>ops</code>. A received <code>Coin&lt;XAUM&gt;</code> (XAUM-pair case or donation) is deposited straight into <code>GoldReserve</code> (100% to vault).</li>
+<li><code>claim_ops(router)</code>: permissionless push to <code>ops_addr</code> (pattern reused from <code>claimTreasury</code>).</li>
+<li><code>poke(...)</code>: optional convenience PTB wrapper. Collect runs in tx N and <code>receive</code> in tx N+1, because a <code>Receiving</code> arg must already exist when the tx starts.</li>
+</ul>
+</li>
+<li>Splits: <strong>hard-coded at creation</strong>, or changeable only within bounds behind a timelock (D2).</li>
+<li><strong>Suggested starting router split of creator fees [A]: 75% reserve / 20% rewards / 5% ops</strong> (v0.2 had 70/15/10 burn/5; D2). Rationale: with redemption live, every XAUm added to the reserve already raises the redeemable floor, and floor arbitrage burns tokens <em>in exchange for gold</em>. A separate buy-and-burn slice is redundant, and it&#39;s the &quot;burning money&quot; you don&#39;t want.</li>
+</ul>
+<p><strong><code>gold_ops::accumulator</code></strong> converts SUI to XAUm, oracle-bounded, using a hot potato.</p>
+<ul>
+<li><code>begin_buy(router, &amp;KeeperCap, sui_amount, clock): (Coin&lt;SUI&gt;, BuyTicket)</code>. Enforces <code>sui_amount ≤ max_clip</code>, the cooldown (<code>last_buy_ms + cooldown_ms</code>) and the per-epoch cap. <strong>New in v0.3:</strong> once redemptions are open, <code>max_clip</code> is also bounded to ≤ ~1% of the vault&#39;s value, so a single deposit&#39;s floor bump stays below the 1.5% redemption fee. That makes front-running deposits (buy before, redeem after) unprofitable (§5).</li>
+<li>The keeper routes in the same PTB: SUI→USDC (Cetus USDC/SUI <code>0x51e8…</code>) then USDC→XAUM (Bluefin XAUM/USDC <code>0x458f…</code>, 0.02%), or the Bluefin 7k aggregator.</li>
+<li><code>finish_buy(ticket, reserve, Coin&lt;XAUM&gt;, pyth_sui, pyth_xaum, clock)</code>. Checks <code>xaum_out ≥ oracle_fair × (1 − max_slip_bps)</code> using <strong>Pyth SUI/USD</strong> (<code>23d7…5744</code>) and <strong>Pyth Crypto.Index.XAUM/USD</strong> (<code>d7db…1c88</code>, fallback Metal.XAU/USD <code>765d…4bb2</code>), with a staleness limit. Then it deposits into the vault. <code>BuyTicket</code> has no abilities, so the SUI <strong>cannot leave the tx</strong> except as XAUm in the vault. That gives the keeper key zero theft power: the worst a keeper can do is a bad-but-bounded fill.</li>
+<li>Reuses ReserveVault/GoldVault2 ideas: <code>MAX_CLIP</code> (there <code>MAX_CLIP_USDG</code>), cooldown (there <code>SMELT_COOLDOWN</code>), oracle floor with tolerance (there <code>FLOOR_TOLERANCE_BPS</code>), fail-closed on a stale feed, and an event log in place of the ring buffers.</li>
+<li>Option: make it <strong>permissionless</strong> (no KeeperCap). Anyone can run the buy because the oracle floor bounds it. Trade-off: MEV and griefing at the tolerance edge.</li>
+</ul>
+<p><del><strong><code>gold_ops::burner</code></strong></del> <strong>Dropped in v0.3</strong> (no router burn slice). <code>burn_from_mint_lock</code> stays public if a burn leg is ever wanted again.</p>
+<p><strong><code>gold_ops::rewards</code></strong> receives the FeeRouter rewards slice and the game&#39;s SUI fees, and tracks what each player can claim after round close.</p>
+<ul>
+<li>State: <code>RewardsPool { id, pending: Balance&lt;SUI&gt;, round_pots: Table&lt;u64, Balance&lt;SUI&gt;&gt;, claimable: Table&lt;address, u64&gt;, lifetime_in: u64, lifetime_fees_in: u64, lifetime_claimed: u64 }</code> (shared), or equivalent DF layout.</li>
+<li>Entry / package functions:<ul>
+<li><code>fund(pool, Coin&lt;SUI&gt;)</code> / internal pull from router: credits the <strong>current open round&#39;s pot</strong> (accrues until <code>close_round</code>).</li>
+<li><code>add_game_fee(pool, Coin&lt;SUI&gt;)</code> (package-only, called by <code>gold_game::compound</code>): move and survey fees go into the <strong>current</strong> round&#39;s pot.</li>
+<li>After <code>gold_game::rounds::close_round</code>, scores are published and <code>allocate(round_id, scores)</code> splits the pot pro-rata by score into <code>claimable</code>. Dust (rounding remainder) <strong>rolls into the next round&#39;s pot</strong> (recommended; or goes to the vault, D8). It is never burned.</li>
+<li>Empty round (no buildings scored): the pot rolls over to the next round.</li>
+<li><code>claim(pool, ctx)</code>: permissionless push of the caller&#39;s claimable SUI. Pattern like Arena <code>holder_yield</code>.</li>
+</ul>
+</li>
+<li><strong>Never touches vault gold or player stakes.</strong> Rewards are SUI (later optionally convertible via a separate player-side hop).</li>
+</ul>
+<p><strong><code>gold_ops::admin</code></strong></p>
+<ul>
+<li><code>AdminCap</code> (multisig) can set the keeper, <code>max_clip</code>, <code>cooldown</code>, <code>max_slip_bps</code> (all inside <strong>hard-coded bounds</strong>), pause/unpause the accumulator, and (within bounds) configure round length, grid constants, base stakes and fees for the game package. <strong>The AdminCap cannot touch XAUm in the vault, cannot change redemption terms (they live in the immutable package), cannot seize claimable rewards, and cannot touch player stakes</strong> (they sit in player-owned <code>Building</code> objects, §8.5).</li>
+<li>UpgradeCap goes to a multisig. After it is stable, restrict it to <code>additive</code> or <code>dep_only</code>, or make it immutable (D4).</li>
+</ul>
+<p><strong>Off-chain keeper (TS).</strong> Fork <code>the-arena/keepers</code> (<code>collectInstadex.ts</code>, the <code>convertBasketYield.ts</code> hop code with SUI→USDC→XAUM pins already wired, and the <code>@bluefin-exchange/bluefin7k-aggregator-sdk</code> fallback). Jobs:</p>
+<ol>
+<li>Poke collect (also keeps uncollected token-fee drift in the redemption denominator small).</li>
+<li><code>receive</code>.</li>
+<li>Size the clip by simulating the route (dry-run) so impact stays ≤ the target bps, and ≤ ~1% of vault once redemptions are open.</li>
+<li><code>begin_buy</code>/<code>finish_buy</code>.</li>
+<li>Call <code>close_round</code> when the window ends if no one else has. Players&#39; stakes unlock on close, so this job matters more now (the emergency exit in §8.5 is the backstop).</li>
+</ol>
+<p>Run it on something more reliable than a laptop. The current Arena keepers run on a home Mac (<code>keepers/README.md</code>). Redemption itself needs <strong>no keeper</strong>.</p>
+<h3 id="package-3-gold_game-upgradeable-at-first-restrict-to-additive-after-audit-because-it-holds-stake-logic">Package 3: <code>gold_game</code> (upgradeable at first; restrict to <code>additive</code> after audit because it holds stake logic)</h3>
+<p><strong><code>gold_game::rounds</code></strong>: round index, timing, seed, close.</p>
+<ul>
+<li>State: <code>RoundState { id, index, start_ms, end_ms, seed: vector&lt;u8&gt;, closed: bool }</code> (shared), plus history table.</li>
+<li>Default round length: <strong>24h</strong>, configurable within hard bounds (e.g. 1h–7d) via AdminCap (D6). A change applies from the <em>next</em> round only.</li>
+<li><code>open_round(seed, clock)</code> / advance: posts a <strong>public seed at round open</strong>. Anyone can verify cell richness off-chain and on-chain.</li>
+<li><code>close_round(compound, rewards, clock)</code>: permissionless after <code>end_ms</code>. Computes final scores from grid state (geometry × time factor, §8.2), calls <code>gold_ops::rewards::allocate</code> for the accrued pot, <strong>clears the grid</strong> (every building of the round becomes <em>settled</em> and its stake becomes withdrawable), and advances the index. Emits <code>RoundClosed{index, pot, total_score, buildings, total_staked}</code>.</li>
+</ul>
+<p><strong><code>gold_game::compound</code></strong>: grid state, buildings, surveys, scores. <strong>Locks <code>$RESERVE</code> stakes in <code>Building</code> objects; never burns.</strong> Doesn&#39;t hold rewards.</p>
+<ul>
+<li>Grid: <strong>16×16</strong> (256 cells), in shared <code>Compound { cells: Table&lt;u16, CellEntry&gt;, per_player: Table&lt;address, PlayerRound&gt;, … }</code>. <code>CellEntry { building_id, owner, kind, placed_ms }</code>. Chosen over 32×32 for gas, UI density, and readable skill; D7 if you prefer 32×32.</li>
+<li>Each cell has a <strong>richness weight</strong> for the current round: <code>richness(x,y) = map(hash(seed || x || y))</code> → discrete weights (e.g. 1–10). Fair, auditable, fully public once the seed is known.</li>
+<li><strong><code>Building { id, owner, kind, round: u64, cell: u16, placed_ms, last_move_ms, moves: u8, stake: Balance&lt;T&gt; }</code></strong>, <code>has key</code> only (no <code>store</code>). It&#39;s an <strong>owned object held by the player</strong>, so only the owner can ever present it in a tx. No admin, keeper or upgrade can pull the stake out of a player&#39;s object without their signature (§8.5).</li>
+<li>Functions:<ul>
+<li><code>place(compound, round, kind, cell, Coin&lt;T&gt;, clock, ctx): Building</code>: cell must be empty (<strong>first place wins; no displace</strong>). The coin must equal the required stake (base × per-address escalation, §8.5). Writes the <code>CellEntry</code>, returns the <code>Building</code> to the sender.</li>
+<li><code>move_building(compound, round, &amp;mut Building, new_cell, Coin&lt;SUI&gt; fee, rewards, clock)</code>: own building, same round, empty target cell, ≥ <code>MOVE_COOLDOWN</code> since last move. The fee goes into the current round&#39;s pot. <strong>Resets <code>placed_ms</code> to now</strong> (time factor restarts, §8.2). No tokens burned.</li>
+<li><code>survey(compound, round, center, Coin&lt;SUI&gt; fee, rewards, clock)</code>: non-refundable SUI fee into the pot. Records a survey (highlight radius, N rounds) for the UI (D12).</li>
+<li><code>demolish(Building, round_state, clock): Coin&lt;T&gt;</code>: allowed once <code>Building.round</code> is <strong>closed</strong>. Returns the <strong>full</strong> stake. Also allowed if the round is past <code>end_ms + EMERGENCY_DELAY</code> (72h) and still not closed. In that case the cell is cleared and the building scores nothing (backstop against a stuck close).</li>
+<li><code>rebuild(compound, round, Building (settled), cell, Coin&lt;T&gt; top_up, clock, ctx): (Building, Coin&lt;T&gt; change)</code>: re-place a settled building into the current round in one tx, reusing its stake (top up or refund the difference if escalation changed the required amount).</li>
+</ul>
+</li>
+<li>Buildings:<ul>
+<li><strong>Gold Mine</strong> (base stake): claims a cell. Weight = <code>cell_richness × adjacency_mult × overcrowd_mult × shaft_boost</code>.</li>
+<li><strong>Vault Shaft</strong> (higher stake, ~2.3× mine, demo ratio 280/120): boosts <strong>all</strong> mines in radius <strong>R = 2</strong> (default Chebyshev). Shafts boost others&#39; mines (<strong>yes</strong>, intentional: placement skill and deny/share tradeoffs). Shafts don&#39;t score by themselves.</li>
+<li><strong>Survey</strong> (small SUI fee, lasts N rounds): paid convenience UI over <strong>public</strong> data. Highlights top-quartile richness cells in a small radius, all computable from the public seed. Not a hidden oracle. No cell occupied, no stake.</li>
+</ul>
+</li>
+<li>Placement skill rules (simple integer formulas [A, tune in D8]):<ul>
+<li><strong>Vein adjacency:</strong> +20% per orthogonally adjacent <strong>own</strong> mine on the same high-richness cluster (&quot;vein&quot;), max +60%. Own-only on purpose: splitting across sybil wallets throws this bonus away.</li>
+<li><strong>Overcrowding:</strong> −15% per extra mine (any owner) beyond 3 in a 3×3 neighborhood.</li>
+<li><strong>Move:</strong> SUI fee to the pot, time factor resets, and a per-building cooldown. Contested cells: first placer wins (no displace).</li>
+</ul>
+</li>
+<li>Score at close: for each player, sum over their mines of <code>richness × adjacency_mult × overcrowd_mult × shaft_boost × time_factor</code>. Rewards split pro-rata by score. <strong>Stake size does not multiply score</strong> (D13).</li>
+</ul>
+<h3 id="optional-token-side-mechanics-checked-against-vice39s-token-model">Optional token-side mechanics, checked against Vice&#39;s token model</h3>
+<table>
+<thead>
+<tr>
+<th>Mechanic</th>
+<th>Compatible?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Backing-per-token view</td>
+<td>✅ On-chain <code>gold_vault::reserve::backing_per_token</code> (needs the D5 supply view)</td>
+</tr>
+<tr>
+<td><strong>Redemption floor</strong></td>
+<td>✅ <strong>Chosen (D1).</strong> Needs the D5 supply view plus the pinned LP constants</td>
+</tr>
+<tr>
+<td>Buyback &amp; burn</td>
+<td>✅ <code>burn_from_mint_lock</code> is public, but <strong>not used</strong> in v0.3 (router burn slice removed; redemption burns instead)</td>
+</tr>
+<tr>
+<td>Rebase / auto-compounding balances</td>
+<td>❌ Sui coins are owned objects. Not possible without a wrapper token</td>
+</tr>
+<tr>
+<td>Transfer/swap tax</td>
+<td>❌ No hooks. The Bluefin fee tier is fixed at 2% by Arena</td>
+</tr>
+<tr>
+<td>Holder XAUm distributions</td>
+<td>✅ Exists already (<code>holder_yield</code> / <code>yield_basket</code>), but that sends gold <em>out</em> to everyone pro-rata on a schedule, which competes with redemption. Use Arena lock rewards bps = 0; game payouts use the <strong>router</strong> rewards slice in SUI instead</td>
+</tr>
+<tr>
+<td>Skill-game round rewards</td>
+<td>✅ FeeRouter + game fees → <code>gold_ops::rewards</code> → claim after close. Vault untouched</td>
+</tr>
+<tr>
+<td>Stake-to-build</td>
+<td>✅ Plain <code>Balance&lt;T&gt;</code> inside player-owned objects; no token hooks needed</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="3-money-flow">3. Money flow</h2>
+<pre class="mermaid">flowchart LR
+  B[Buyer SUI] -->|swap, 2% fee| P[(Bluefin TOKEN/SUI pool&lt;br/>LP NFT locked forever)]
+  S[Seller TOKEN] -->|swap, 2% fee in TOKEN| P
+  P -->|~20% of fee| BF[Bluefin protocol]
+  P -->|collect_instadex_fees, permissionless| L{Arena LockLpSplit}
+  L -->|TOKEN-side fees, Arena rule| BURN1[burn via InstadexMintLock]
+  L -->|platform ≥5%| VP[Vice platform 0x92a3…]
+  L -->|buyback bps| VB[VICEFUN buyback & burn]
+  L -->|rewards bps on lock, keep 0| HY[holder-yield unused]
+  L -->|creator bps → beneficiary = router address| R[gold_ops::router FeeRouter]
+  R -->|reserve_bps ~75%| ACC[accumulator: hot-potato buy]
+  R -->|rewards_bps ~20%| RP[gold_ops::rewards&lt;br/>round pot, SUI]
+  R -->|ops_bps ~5%| OPS[ops wallet]
+  ACC -->|"SUI→USDC Cetus → XAUM Bluefin 0.02%&lt;br/>Pyth-bounded, clip ≤ ~1% of vault"| V[(gold_vault::reserve&lt;br/>Balance XAUM, redeemable)]
+  D[Anyone: donations / XAUm-pair fees] -->|deposit| V
+  H[Holder or arber] -->|"redeem: x TOKEN"| RD[gold_vault::redeem]
+  ARB[Arber, when price below backing] -->|buy TOKEN| P
+  ARB -->|TOKEN| H
+  RD -->|burn x TOKEN| BURN2[burn_from_mint_lock]
+  V -->|"xaum × x / circulating, minus 1.5%"| RD
+  RD -->|XAUm out| H
+  V --- FEE[1.5% fee stays in vault:&lt;br/>backing per token rises]
+  PLAY[Players] -->|"stake TOKEN: place mine / shaft"| BLD[Building objects&lt;br/>stake locked, player-owned]
+  BLD -->|cell entry| COMP[gold_game::compound]
+  PLAY -->|move / survey fee in SUI| RP
+  COMP -->|close_round scores| RP
+  RP -->|allocate pro-rata| CL[claimable per player]
+  CL -->|permissionless claim| PL[Players]
+  BLD -->|"demolish after close: full stake back"| PL</pre><p><strong>Invariants:</strong></p>
+<ul>
+<li>The vault receives the reserve slice, donations and retained redemption fees. Its <strong>only</strong> outflow is <code>redeem</code>, which pays <code>xaum × x / C × (1 − fee)</code> against x tokens burned in the same tx. Backing per token never goes down because of a redemption.</li>
+<li>Round rewards come only from the rewards pot (router slice + SUI move/survey fees). The game never pulls XAUm from the vault.</li>
+<li>Player stakes only ever go back to the <code>Building</code> owner. Nothing in the game burns tokens.</li>
+</ul>
+<hr>
+<h2 id="4-decisions-for-you">4. Decisions for you</h2>
+<ol>
+<li><p><strong>D1, Withdrawal policy: DECIDED (v0.3): redeemable (V2).</strong> Burn <code>$RESERVE</code> → pro-rata XAUm against <strong>circulating</strong> supply (§2.1), 1.5% fee kept in the vault, global 24h cap, opening gate. V1 &quot;never&quot; is retired along with the &quot;Held forever&quot; tagline. V3 (timelocked governance exit) stays rejected. Parameters in D9.</p>
+</li>
+<li><p><strong>D2, Fee split (changed):</strong> creator bps on the lock (pad max ~90% with 5% platform and 5% buyback; on-chain 9,500 is possible if buyback = 0 via a direct PTB). <strong>Router: the 10% burn slice is removed.</strong> <strong>Recommended [A]: 90% creator on lock, then router 75% reserve / 20% rewards / 0% burn / 5% ops.</strong> Alternative: 80/15/0/5 if you&#39;d rather push the floor harder than the game pot. Reasoning: with redemption, reserve XAUm <em>is</em> the buyback (it raises what every token can be redeemed for), and floor arbitrage burns tokens in exchange for gold. Still open: whether splits are immutable or timelocked-within-bounds (recommend immutable). Note: Arena still burns <strong>sell-side token fees</strong> on collect. That&#39;s an Arena rule for every Vice lock, it&#39;s fee tokens rather than holder money, and changing it would mean Option B.</p>
+</li>
+<li><p><strong>D3, Quote pair:</strong></p>
+<ul>
+<li><strong>SUI</strong> (your leaning): deep buy/sell UX, needs the accumulator, oracle and keeper. Reserve accumulates XAUm via SUI→USDC→XAUm.</li>
+<li><strong>XAUM (&quot;Gold&quot;)</strong>: fees arrive <em>already in XAUm</em>, so there are no swaps, no oracle and no keeper risk for the reserve. But traders route through the thin XAUm market, exits are capped by the ~$42k USDC side, and a Matrixdock pause would freeze the trading pool <em>and</em> redemptions at the same time.</li>
+</ul>
+<p>I&#39;d keep SUI, but note the XAUM option removes ~60% of the accumulator build.</p>
+</li>
+<li><p><strong>D4, Keeper trust and upgradeability (changed):</strong> keeper-gated vs. permissionless accumulator; multisig signers. <code>gold_vault</code> is immutable from day 1 after audit (recommended; it now holds the redemption formula, so immutability is the promise). <strong>New:</strong> <code>gold_game</code> holds the stake/demolish logic. Even though stakes sit in player-owned objects an upgrade can&#39;t reach, a <code>compatible</code> upgrade could change the body of <code>demolish</code>. <strong>Recommend restricting <code>gold_game</code> to <code>additive</code> right after audit</strong>, with tunables in a bounded config object, so the &quot;you always get your stake back&quot; rule can&#39;t be edited.</p>
+</li>
+<li><p><strong>D5, Arena touch (changed: now required):</strong> ship the one-line <code>mint_lock_total_supply</code> view (Compatible upgrade). <strong>Redemption can&#39;t work without it</strong>: total supply sits behind the locked <code>TreasuryCap</code> and burns happen in Arena paths we can&#39;t observe. Optional second view: <code>bluefin_lock_position_info(&amp;BluefinPositionLock): (u128, u32, u32)</code> so the vault can verify the LP constants on-chain instead of pinning them at creation. <strong>Recommend: ship both views in one upgrade</strong>, and still pin the constants (belt and braces). Also confirm the platform won&#39;t use <code>admin_set_beneficiary</code> on this lock, and that plain-Instant <code>collect_instadex_fees</code> stays callable.</p>
+</li>
+<li><p><strong>D6, Round length:</strong> default 24h; confirm hard bounds (e.g. 1h–7d) and who can change it.</p>
+</li>
+<li><p><strong>D7, Grid size:</strong> <strong>16×16 proposed</strong>; confirm or switch to 32×32.</p>
+</li>
+<li><p><strong>D8, Exact game weights (changed):</strong> richness weight table, adjacency (+20% / max +60%, own mines only), overcrowding (−15% beyond 3 in 3×3), shaft radius R=2 and boost magnitude, survey duration / highlight radius. <strong>Stake parameters:</strong> base stakes (Mine 250k / Shaft 600k <code>$RESERVE</code> [A], same shape as the demo&#39;s 120/280), per-address escalation (+25% per additional building of a kind), per-address caps (24 mines / 6 shafts per round [A]), time-factor curve (linear). <strong>Dust:</strong> roll into the next round&#39;s pot (recommended) or to the vault. Never burned. Shafts boosting others: <strong>yes</strong> (confirm).</p>
+</li>
+<li><p><strong>D9, Redemption parameters (new; hard-coded in the immutable vault, so choose before audit):</strong></p>
+<ul>
+<li>Fee: <strong>1.5%</strong> (range 1–2%), stays in the vault.</li>
+<li>Global cap: <strong>3% of vault XAUm per rolling 24h window</strong>, plus <strong>1% per tx</strong>. Per-address cooldowns are skipped because sybils defeat them; the global cap is the real control.</li>
+<li>Opening gate: redemptions open at <strong>launch + 7 days AND vault ≥ ~1 XAUm</strong>, so the first clips can&#39;t be front-run against a tiny vault and rounding stays sane.</li>
+<li><code>MIN_REDEEM</code> dust floor. Abort on XAUm global pause or a denied redeemer (before burning).</li>
+<li>Accumulator clip ≤ ~1% of vault once open.</li>
+<li><strong>Recommendation: as listed.</strong> Optional stronger variant: two-step redeem (request, then claim after ≥1 epoch at <code>min(F_request, F_claim)</code>). That kills deposit front-running entirely but costs UX and ~1–2 d of build. I&#39;d skip it unless clips must be large relative to the vault.</li>
+</ul>
+</li>
+<li><p><strong>D10, Stake lifecycle (new):</strong> <strong>Recommend: stakes unlock only after the building&#39;s round closes</strong> (no mid-round exit), withdraw any time after that with no expiry, <code>rebuild</code> re-places a settled building into the next round in one tx, and an <strong>emergency exit 72h after <code>end_ms</code></strong> if <code>close_round</code> never ran (no score). Alternative considered: mid-round demolish with score forfeited. Rejected because it reopens flash-stake and grid-blocking games.</p>
+</li>
+<li><p><strong>D11, Move rule (new):</strong> <strong>Recommend a small SUI fee (≈0.25 SUI [A]) into the current round&#39;s pot + time-factor reset + 30-min per-building cooldown.</strong> The reset is the real cost (you give up the time you&#39;d already banked), the fee stops free cell-hopping spam, and the cooldown caps griefing loops. Alternative: cooldown only, no fee (simpler, but free moves invite bot thrash on contested clusters).</p>
+</li>
+<li><p><strong>D12, Survey cost (new):</strong> <strong>Recommend a small non-refundable SUI fee (≈0.1 SUI [A]) into the round pot</strong> rather than a short token lock. Surveys don&#39;t occupy cells, so a lock doesn&#39;t stop any spam the grid cares about. A lock would mean an extra object and a withdraw step just to read public data. The fee is tiny, goes straight back to players, and burns nothing.</p>
+</li>
+<li><p><strong>D13, Stake-weighted score (new):</strong> <strong>Recommend no stake weighting.</strong> Fixed stake per building type; more capital only buys more buildings, and that is sub-linear because of per-address escalation and caps. Optional &quot;reinforce&quot; (extra stake on a mine for up to +20% score, square-root curve, hard cap) is designed but <strong>off for V1</strong>. Anti-whale reasoning in §8.5.</p>
+</li>
+<li><p><strong>D14, Fee currency for moves/surveys (new):</strong> <strong>Recommend SUI</strong>, paid straight into the SUI round pot: one asset in the pot, no sell pressure from converting tokens, no burn. Alternative: <code>$RESERVE</code> fees into a separate token side-pot paid out pro-rata next to SUI. It adds token demand but means a second pot, a second claim path and players dumping their winnings.</p>
+</li>
+<li><p><strong>Also:</strong> <strong>tagline</strong>: &quot;Held forever.&quot; no longer fits; proposal <strong>&quot;Redeemable in gold.&quot;</strong> (or &quot;Every token, backed in gold&quot;). Ticker: <code>$GOLD</code> is already your live Robinhood Chain token and Bluefin lists XAUM, not GOLD. Also decide what to do with the launcher&#39;s first-buy bag (burn or disclose; it counts as circulating either way), and whether to use Matrixdock primary minting (KYC, $10k min, 0.25% fee, T+3) once SUI accumulates. Primary minting has zero slippage but means custodial off-chain steps. <strong>Get a legal read on &quot;redeemable&quot; framing</strong> before launch copy (see §5).</p>
+</li>
+</ol>
+<hr>
+<h2 id="5-risks">5. Risks</h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Detail</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>XAUm freeze / pause</strong></td>
+<td>[C] On-chain <code>DenyCapV2&lt;XAUM&gt;</code> <code>0x7d76…5cc1</code> has <code>allow_global_pause: true</code> (held under object <code>0xa49d…6866</code>). TreasuryCap <code>0x9706…6f57</code> is held by object <code>0x4f0b…97f4</code>. Per Sui docs, a denied or paused coin can&#39;t be used as a tx input, and from the next epoch can&#39;t be received. Third-party research (Ketju) says Matrixdock&#39;s Sui deployment &quot;can freeze a holder, pause transfers… a single key can change the code with no delay&quot; [unverified]. <strong>With redemption live: a global pause halts all redemptions</strong> (and accumulator deposits), so the floor stops working exactly when people may want out. A denied redeemer can&#39;t use the gold they receive. A Matrixdock package upgrade could change XAUm&#39;s behaviour arbitrarily.</td>
+<td>Hold <code>Balance&lt;XAUM&gt;</code> inside the shared vault, not address-owned coins (a Balance in a shared object is not an address the deny list targets). <code>redeem</code> checks global pause and sender deny status <strong>and aborts before burning</strong>, so nobody burns tokens for unusable gold. Redemptions resume automatically on unpause (nothing queued, nothing lost). Test buy/deposit/redeem under pause on devnet with our own regulated mock coin. Disclose the issuer risk plainly next to the redeem button.</td>
+</tr>
+<tr>
+<td><strong>Bank run / vault drain</strong></td>
+<td>Holders rush to redeem, the vault shrinks, the &quot;reserve&quot; headline falls.</td>
+<td>Pro-rata + fee means <strong>each redemption raises backing per token for everyone who stays</strong> (§2.2), so there&#39;s no first-mover advantage to run for. Global cap 3%/24h and 1%/tx (D9) slow drains, buy time if a bug or issuer event surfaces, and limit how fast arbers can hit the floor. Headline metric changes from &quot;total reserve&quot; to <strong>backing per circulating token</strong>, which only goes up from redemptions.</td>
+</tr>
+<tr>
+<td><strong>Floor arbitrage and deposit front-running</strong></td>
+<td>Price &lt; ~96% of backing → arbers buy + redeem (intended). Exploit version: buy just before a known accumulator deposit, redeem right after, and capture the backing bump.</td>
+<td>Profit needs the deposit bump to beat the 1.5% fee + 2% pool fee + slippage. Accumulator clip ≤ ~1% of vault once redemptions open, so it doesn&#39;t. Opening gate (7 days + ≥1 XAUm) avoids the tiny-vault phase where one clip is a big share. Optional two-step redeem (D9) if clips must be large.</td>
+</tr>
+<tr>
+<td><strong>Sandwich / price manipulation of the denominator</strong></td>
+<td><code>circulating</code> uses the pool&#39;s spot price to value <code>LP_tok</code>.</td>
+<td>Spot moves only change <code>LP_tok</code> when tokens physically enter or leave the locked position, so <code>C</code> stays equal to &quot;tokens held outside the locked position&quot; (§2.1). You can&#39;t redeem more than you hold. Payout uses no oracle. <code>min_out</code> protects redeemers against other txs landing first. Rounding favours stayers. Ordinary buyers can still be sandwiched in the pool (generic DEX MEV, unchanged).</td>
+</tr>
+<tr>
+<td><strong>Wrong LP constants / supply view</strong></td>
+<td>If the pinned <code>L</code> / ticks or the Arena supply view are wrong, every payout is mispriced, and the vault is immutable.</td>
+<td>Verify pinned constants against the position object on mainnet before <code>make_immutable</code>, ideally via the optional D5 position view. Mainnet devInspect of <code>circulating()</code> vs. an off-chain indexer sum of holder balances. Unit + property tests on the CLMM math across the full tick range. This is the #1 audit focus.</td>
+</tr>
+<tr>
+<td><strong>Immutable vault, no pause</strong></td>
+<td>A redemption bug can&#39;t be patched or paused.</td>
+<td>Small surface (one outflow fn), caps bound the worst-case daily loss to ~3% of the vault, external audit, mainnet canary on a throwaway launch with tiny real XAUm.</td>
+</tr>
+<tr>
+<td><strong>Regulatory framing</strong></td>
+<td><code>gold-reserve</code> docs (GOLD_VAULT_V2 §5) deliberately avoided a redemption right because &quot;redeemable for reserves&quot; invites securities-flavoured framing (and overlapped SherwoodDAO). V2 brings that right back. [A: not legal advice]</td>
+<td>Get counsel before launch copy. Describe it as a protocol mechanism (burn → pro-rata XAUm), make no return or price promises, and show the formula and issuer risk in the UI.</td>
+</tr>
+<tr>
+<td><strong>XAUm liquidity / slippage</strong></td>
+<td>[C, Oct 6] Bluefin XAUM/USDC <code>0x458f…</code> (fee 0.02%, tick spacing 1) holds <strong>88.43 XAUM + 42,121 USDC</strong> ($409k). XAUM/SUI pools are <del>$190 total; next best is Momentum at $3.3k. Reserve <em>buys</em> draw down the ~88 oz XAUM side. The $42k USDC side limits people <em>selling</em> XAUm, so it <strong>now directly limits redeemers who want cash</strong> (redeem → sell XAUm). Total Sui XAUm supply is <strong>2,672 oz</strong> (</del>$11M), so the reserve has a natural ceiling (same lesson as GoldVault2&#39;s &quot;SGOV float constraint&quot;).</td>
+<td>Route via USDC. Size clips by simulation, with a starting cap of ~$1–2.5k per clip (and ≤ ~1% of vault once redemptions open), a 15–30 min cooldown and a daily cap [E]. Oracle floor ≤ 1–1.5% worse than Pyth. Pause when depth drops. The UI should show redeemers the current XAUm exit depth.</td>
+</tr>
+<tr>
+<td><strong>Oracle</strong></td>
+<td>Pyth Index.XAUM/USD may lag or go stale. Metal.XAU/USD closes on weekends; SUI/USD is a separate hop.</td>
+<td>Staleness + confidence checks, fail-closed (buy skipped, funds wait), dual-feed sanity check. Redemption is oracle-free, so oracle failures can&#39;t drain the vault.</td>
+</tr>
+<tr>
+<td><strong>Keeper key</strong></td>
+<td>With the hot potato, a key can&#39;t steal funds, only make bounded bad fills or stall. A stalled keeper also delays <code>close_round</code>, which delays stake unlocks.</td>
+<td>Clip caps, cooldowns, a multisig AdminCap that can rotate or pause. The permissionless fallback means anyone can buy if the keeper dies. <code>close_round</code> is permissionless; 72h emergency stake exit.</td>
+</tr>
+<tr>
+<td><strong>Stake custody (game)</strong></td>
+<td>Stakes are real holder tokens locked in <code>Building</code> objects. Risks: a bug in <code>demolish</code>, or an upgrade that changes it.</td>
+<td>Buildings are <strong>player-owned</strong> objects (<code>key</code> only), so no other party can pass them into a tx. Restrict <code>gold_game</code> to <code>additive</code> after audit (D4). Emergency exit. Invariant tests: Σ stakes in live buildings = Σ placed − Σ demolished; demolish always returns exactly the stake.</td>
+</tr>
+<tr>
+<td><strong>Stake-game exploits</strong></td>
+<td>Flash-staking, stake recycling, sybil grid-squatting, whales.</td>
+<td>See §8.5. Short version: time-weighted score, no exit before close, escalation, own-only vein bonus, per-address caps; the locked stake itself is the anti-spam cost.</td>
+</tr>
+<tr>
+<td><strong>vicefun dependency</strong></td>
+<td>Arena is upgradeable (Compatible, 24 upgrades in one month). AdminCap can <code>admin_set_beneficiary</code> and can change the official pit and fee config. The plain-Instant path is &quot;sunset&quot; in the platform keeper. Platform/buyback bps on our lock are fixed at launch, but <strong>Bluefin&#39;s protocol share is Bluefin&#39;s</strong>. <strong>New:</strong> redemption reads <code>mint_lock_total_supply</code> and <code>burn_from_mint_lock</code> from Arena, so a breaking Arena upgrade could halt redemptions (Compatible policy can&#39;t remove public fns but can change their bodies).</td>
+<td>If you operate Vice (the repo suggests so; confirm), commit publicly to leaving this lock and these two functions alone. Optionally restrict Arena&#39;s policy later, or ship Option B. Run our own collector.</td>
+</tr>
+<tr>
+<td><strong>Volume dependence</strong></td>
+<td>No buys means no gold <strong>and</strong> thin round pots. Reserve growth is a share of buy volume [E]; the rewards slice is smaller still.</td>
+<td>Set honest expectations. Illustration: $50k/day of buys at ~80% creator → ~$640–720/day into the router; at 75/20/5 that&#39;s ≈ $480–540/day into the vault + ~$130–145/day rewards pot, plus move/survey fees [E]. Self-trading to fund the pot is never profitable: ~2% paid for ≈0.3% routed to the pot.</td>
+</tr>
+<tr>
+<td><strong>Two-tx beneficiary gap</strong></td>
+<td>Fees from the launch tx up to <code>set_beneficiary</code> go to the launcher.</td>
+<td>Do <code>set_beneficiary</code> in the very next tx and forward the residuals publicly.</td>
+</tr>
+<tr>
+<td><strong>Game fairness / MEV</strong></td>
+<td>Seed is public at open, so bots can compute optimal placements instantly and race for the richest cells.</td>
+<td>Accepted: skill is reading patterns + opponent placement + timing under capital lock, not hidden info. The time factor rewards early commitment, while late placers get to see the board. Surveys are convenience, not alpha. Per-address caps and escalation limit how much one bot can grab.</td>
+</tr>
+<tr>
+<td><strong>Score griefing</strong></td>
+<td>Overcrowding penalties and hostile shaft placement can suppress rivals.</td>
+<td>By design (skill). Per-player building caps (D8). Move fee + cooldown limit grief loops.</td>
+</tr>
+<tr>
+<td><strong>Arena code</strong></td>
+<td>Arena itself is unaudited as far as the repo shows [A].</td>
+<td>Out of scope, but listed. Redemption now depends on two Arena functions, so include them in our audit&#39;s read-only review.</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="6-build-plan-e-one-experienced-sui-move-dev">6. Build plan [E, one experienced Sui Move dev]</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Milestone</th>
+<th>Effort [E]</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>M0</td>
+<td>Lock decisions D1–D14, write a one-page spec with invariants (&quot;only outflow = redeem formula&quot;, &quot;backing per token never decreases on redeem&quot;, &quot;abort before burn when XAUm paused/denied&quot;, &quot;ticket must be consumed&quot;, &quot;game never drains vault&quot;, &quot;stake only returns to its owner, in full&quot;, bounds)</td>
+<td>1–2 d</td>
+</tr>
+<tr>
+<td>M0.5</td>
+<td>Arena Compatible upgrade: <code>mint_lock_total_supply</code> (+ optional position view), tests, publish</td>
+<td>0.5–1 d</td>
+</tr>
+<tr>
+<td>M1</td>
+<td><code>gold_vault</code> (reserve, deposit, <strong>redeem</strong> with CLMM <code>LP_tok</code> math, fee, 24h/tx caps, opening gate, deny/pause checks, views) + Move unit tests + property tests on the circulating math and floor-monotonicity</td>
+<td>4–6 d</td>
+</tr>
+<tr>
+<td>M2</td>
+<td><code>gold_ops</code> router (transfer-to-object receive, <strong>3-way splits</strong>, ops push) + accumulator (hot potato, Pyth Sui integration, caps incl. vault-relative clip) + <code>gold_ops::rewards</code> (incl. game-fee intake, rollover) + admin; unit tests with mock coins/oracle. <em>Burner dropped.</em></td>
+<td>5–7 d</td>
+</tr>
+<tr>
+<td>M3</td>
+<td><code>gold_game::rounds</code> + <code>gold_game::compound</code> (grid, <strong>staked <code>Building</code> objects</strong>, place / move / survey / demolish / rebuild / emergency exit, escalation + caps, time-weighted score, close → allocate → grid clear); unit tests</td>
+<td>7–10 d</td>
+</tr>
+<tr>
+<td>M4</td>
+<td>Keeper (fork Arena keepers: collect poke, receive, dry-run clip sizing, Cetus/Bluefin hop, 7k fallback, <code>close_round</code>), alerting, hosted runner</td>
+<td>3–4 d</td>
+</tr>
+<tr>
+<td>M5</td>
+<td>Testing: devnet/testnet with mock XAUM/USDC + mock pools (XAUm/Bluefin XAUM pool on testnet is <strong>unknown</strong>, assume unavailable); deny-list/pause test with our own regulated mock coin (incl. redeem aborts before burn); <strong>redemption sim</strong> (arb bot vs. pool, deposit front-run attempts, cap behaviour); game sim (bot vs bot placement, flash-stake / sybil attempts); <strong>mainnet dry-run (devInspect)</strong> of the real route and of <code>circulating()</code> against indexer balances; mainnet canary with tiny caps on a throwaway launch</td>
+<td>5–8 d</td>
+</tr>
+<tr>
+<td>M6</td>
+<td>Review/audit: ~1,200–1,800 LOC Move [E] (vault+ops+game). <strong>Redeem path and stake custody are the priority.</strong> Internal adversarial review plus an external audit or audit contest (Sui-specialist firm). Calendar 1–3 weeks; cost varies widely, get quotes</td>
+<td>1–3 wk</td>
+</tr>
+<tr>
+<td>M7</td>
+<td>Launch: coin publish → <code>launch_instant_v2_buy_entry&lt;T,SUI&gt;</code> with chosen split → <code>set_beneficiary(router)</code> → verify on suiscan → create <code>GoldReserve</code> with pinned LP constants → verify constants → <code>make_immutable</code> on <code>gold_vault</code> → restrict <code>gold_game</code> to <code>additive</code> → reserve panel + Compound UI on the vicefun token page (XAUm held, backing per circulating token, redeem quote + fee + today&#39;s cap left + XAUm exit depth, buy/redeem log, live grid / round timer / your stakes / demolish / claim)</td>
+<td>3–5 d</td>
+</tr>
+</tbody></table>
+<p><strong>Total build before audit: ~5–7 weeks [E]</strong> (v0.2: 4–5.5). Drivers: redemption math, caps and tests (+<del>2–3 d), stake custody and lifecycle in the game (+</del>2–3 d), the Arena view (+<del>0.5–1 d), extra sims (+</del>1–2 d), minus the burner (−~0.5–1 d). Dropping the accumulator (XAUM pair, D3) still saves ~1–1.5 weeks of ops work but doesn&#39;t remove the game or redemption.</p>
+<hr>
+<h2 id="7-reuse-from-your-repos">7. Reuse from your repos</h2>
+<ul>
+<li><strong><code>gold-reserve</code></strong> (private; README says &quot;$RESERVE&quot;, repo description says &quot;$GOLD&quot;; Robinhood Chain, Solidity/Uniswap v4). Contents: <code>GoldToken</code> (gons rebase), <code>GoldFeeHook</code> (v4 swap tax 3%/11%), <code>GoldVault2</code> (derived-split accounting, SGOV &quot;ratchet&quot;: principal never sold, Chainlink floor, <code>smelt</code> buyback-burn, permissionless <code>claimTreasury</code>, no-revert <code>creditTax</code>), <code>GoldSeeder</code> (single-sided seed, LP held forever), <code>RobinpadGoldFactory</code>.<ul>
+<li><strong>Reusable as design:</strong> oracle-floor + clip + cooldown keeper bounds, permissionless push, &quot;a stale feed can only block, never move principal&quot; (redemption here is oracle-free for the same reason), the price-aware comparison of reserve vs. circulating cap (now an on-chain view rather than a burn throttle), the &quot;float constraint&quot; sizing lesson, immutable-by-default posture.</li>
+<li><strong>Deliberately diverging:</strong> GoldVault2&#39;s no-outflow ratchet and its explicit avoidance of a redemption right (§5 of the ratchet doc). v0.3 chooses redemption; see the regulatory row in §5.</li>
+<li><strong>Not portable:</strong> rebase, hook tax, v4 seeder, EVM code.</li>
+</ul>
+</li>
+<li><strong><code>reserve-vault</code></strong> (private): a single immutable Solidity <code>ReserveVault</code> that is GoldVault2 ported to Pons-locker fees (35% SGOV reserve / 35% burn / 30% treasury). This is the closest analogue: fee income in, then a reserve/burn/treasury split. Our router and accumulator are its Sui translation, now with a rewards leg instead of a burn leg.</li>
+<li><strong><code>the-arena</code></strong> (public): <em>is</em> vicefun. It provides the lock/beneficiary API, <code>burn_from_mint_lock</code> (used by <code>redeem</code>), the <code>instant_range</code> tick logic (source of our pinned LP constants), <code>holder_yield</code>/<code>yield_basket</code> patterns (model for <code>gold_ops::rewards</code> claims), and keepers with the SUI→USDC→XAUM hop already wired.</li>
+<li><strong><code>robots/contracts/moonbags_aida</code></strong>: V14 <code>set_pool_backing</code> is a DF-based fee split at collect. It&#39;s prior art for Option B. Only skimmed.</li>
+<li><strong><code>moonbags-contracts-sui</code></strong>: Odyssey Moonbags base. Not needed for this scope.</li>
+<li><strong>Demo UI</strong> (<a href="https://lagoon-nova-berry-dove.grok.me">https://lagoon-nova-berry-dove.grok.me</a>): idle builder, fully simulated (start 800 $RESERVE; burn to place Gold Mine 120 / Vault Shaft 280; fake USDC into a never-withdraw vault, &quot;Redemption: Closed&quot;). Use as UX reference only. On-chain: placing <strong>stakes</strong> (not burns), yield is fee-funded round claims rather than building mint, and redemption is <strong>open</strong>.</li>
+</ul>
+<hr>
+<h2 id="8-skill-game-compound">8. Skill Game: Compound</h2>
+<p><em>Skill shape: <strong>mix placement skill with timed rounds.</strong> Buildings earn a claim on the <strong>rewards pool</strong> (FeeRouter rewards slice + SUI game fees), not the vault. <strong>v0.3: you stake to build, not burn to build.</strong> Your <code>$RESERVE</code> sits locked in your building for the round and comes back in full afterwards.</em></p>
+<h3 id="81-loop">8.1 Loop</h3>
+<ol>
+<li>Time is split into <strong>rounds</strong> (default <strong>24h</strong>; configurable within hard bounds, D6).</li>
+<li>The compound is a fixed <strong>16×16 grid</strong> (256 cells; D7 if you want 32×32).</li>
+<li>At <strong>round open</strong>, a <strong>public seed</strong> is posted. Cell richness is <code>map(hash(seed, x, y))</code> → discrete weights. Fully verifiable; no commit-reveal delay and no future-randomness race.</li>
+<li>Players <strong>stake</strong> <code>$RESERVE</code> (locked in an owned <code>Building</code> object) to:<ul>
+<li>Place a <strong>Gold Mine</strong> (base stake) on an empty cell. Weight = richness × adjacency × overcrowding × shaft boost × time factor.</li>
+<li>Place a <strong>Vault Shaft</strong> (higher stake): boosts all mines in radius <strong>R = 2</strong> (including rivals&#39;).</li>
+<li>Players also pay small <strong>SUI fees</strong> (into this round&#39;s pot, never burned) to:<ul>
+<li><strong>Survey</strong> (lasts N rounds): paid highlight of top-quartile cells in a radius (computable from the public seed). Convenience UI, not hidden info.</li>
+<li><strong>Move</strong> their own building mid-round: fee + 30-min cooldown, and the building&#39;s time factor restarts. One building per cell; <strong>no displace</strong>: first place wins, and you only move your own.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Skill levers: vein adjacency bonuses, overcrowding penalties, shaft placement (boost self / deny rivals / tax rivals by boosting them into your score race), reading the public richness map, <strong>when to commit</strong> (early = full time factor, late = see the board first), and how to spread limited capital under escalation.</li>
+<li><strong>Round close:</strong> anyone calls <code>close_round</code> after <code>end_ms</code>. Rewards for the round = FeeRouter rewards slice accrued that round + that round&#39;s move/survey fees (SUI). Split <strong>pro-rata by score</strong>. Dust rolls into the next pot (D8). Players <code>claim</code> from <code>gold_ops::rewards</code>. The grid clears.</li>
+<li><strong>After close:</strong> every building of that round is <em>settled</em>. <code>demolish</code> returns the full stake, or <code>rebuild</code> re-places it into the new round in one tx.</li>
+<li><strong>The vault is untouched.</strong> Only reserve_bps → accumulator → XAUm vault. The game never drains the vault. Buildings can&#39;t mint gold or USDC on-chain; the demo&#39;s streaming was fake.</li>
+</ol>
+<h3 id="82-placement-formulas-a-tune-in-d8">8.2 Placement formulas [A, tune in D8]</h3>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Formula</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Vein adjacency</td>
+<td>+20% per orthogonally adjacent <strong>own</strong> mine on the same high-richness cluster; max +60%</td>
+</tr>
+<tr>
+<td>Overcrowding</td>
+<td>−15% per mine (any owner) beyond 3 in the local 3×3</td>
+</tr>
+<tr>
+<td>Shaft boost</td>
+<td>Multiply mine weight by shaft factor for each shaft within R=2 (exact factor TBD; e.g. +25% per shaft, soft-cap)</td>
+</tr>
+<tr>
+<td><strong>Time factor</strong></td>
+<td><code>tf = (end_ms − placed_ms) / (end_ms − start_ms)</code>, in bps. Placed at open = 1.0; placed with 1h left in a 24h round ≈ 0.04. A move resets <code>placed_ms</code></td>
+</tr>
+<tr>
+<td>Contested cell</td>
+<td>First successful place wins; no displace</td>
+</tr>
+<tr>
+<td>Richness</td>
+<td>Public <code>hash(seed‖x‖y)</code> → weight band (e.g. 1–10)</td>
+</tr>
+<tr>
+<td>Mine score</td>
+<td><code>richness × adjacency × overcrowding × shaft_boost × tf</code> (stake size is <strong>not</strong> a factor)</td>
+</tr>
+</tbody></table>
+<h3 id="83-fairness">8.3 Fairness</h3>
+<ul>
+<li><strong>Recommended richness model:</strong> seed revealed at round open; richness = hash-derived weights; surveys are a paid convenience overlay on public data (highlight top-quartile in radius). Everything is verifiable; skill is pattern-reading + opponent placement + commitment timing under a capital lock, not an information oracle.</li>
+<li>Rejected for V1: commit-reveal that hides richness until close (breaks survey-as-skill without awkward partial opens); future <code>sui::random</code> drawn after place-window (MEV / prediction issues unless carefully gated).</li>
+<li>Anti-cheat: stakes and fees are on-chain; scores recomputed from grid state at close; permissionless close; no custodian of rewards beyond the shared <code>RewardsPool</code> accounting; no custodian of stakes at all (player-owned objects).</li>
+</ul>
+<h3 id="84-what-the-demo-got-wrong-and-what-we-keep">8.4 What the demo got wrong (and what we keep)</h3>
+<table>
+<thead>
+<tr>
+<th>Demo</th>
+<th>On-chain Compound</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Buildings stream fake USDC into vault</td>
+<td>Buildings earn <strong>score</strong> → claim on <strong>rewards pool</strong> funded by trading fees + game fees</td>
+</tr>
+<tr>
+<td>Never-withdraw vault accumulates fake yield</td>
+<td><strong>Redeemable</strong> vault accumulates <strong>only</strong> reserve-slice XAUm from the real fee → swap path (plus donations and redemption fees). &quot;Redemption: Closed&quot; becomes open (D1)</td>
+</tr>
+<tr>
+<td>Idle continuous earn</td>
+<td>Timed rounds; score settles at close</td>
+</tr>
+<tr>
+<td>Gold Mine 120 / Vault Shaft 280 <strong>burned</strong></td>
+<td>Same <em>shape</em> (mine cheaper, shaft dearer), but <strong>staked and returned</strong>; proposed 250k / 600k <code>$RESERVE</code> base (D8)</td>
+</tr>
+</tbody></table>
+<h3 id="85-stake-model-and-exploit-analysis">8.5 Stake model and exploit analysis</h3>
+<p><strong>Why staking still works as a cost.</strong> A burn charges a fixed price; a stake charges <em>time and risk</em>. While locked, your tokens can&#39;t be sold, redeemed for gold, or used elsewhere, and you carry the token&#39;s price risk. That opportunity cost is what stops a player from carpeting the grid for free. The design keeps that cost real and adds rules where a pure stake would be too cheap.</p>
+<p><strong>Stake sizing.</strong> Fixed base stake per building type (Mine 250k, Shaft 600k <code>$RESERVE</code> [A], adjustable within hard bounds by AdminCap for future rounds so the cost tracks token price). <strong>Per-address escalation:</strong> your k-th building of a kind in a round costs <code>base × (1 + 0.25·(k − 1))</code>. Ten mines cost 21.25× base instead of 10×. <strong>Per-address caps:</strong> 24 mines / 6 shafts per round [A].</p>
+<table>
+<thead>
+<tr>
+<th>Exploit</th>
+<th>What it looks like</th>
+<th>Defence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Flash-staking</strong></td>
+<td>Borrow or buy tokens, place at the last minute (after seeing the whole board), take the score, unstake right after close. Or use a flash loan inside one tx</td>
+<td><strong>Time factor:</strong> a building placed with 1h left in a 24h round scores ~4% of one placed at open. <strong>No exit before close:</strong> the stake can&#39;t leave the <code>Building</code> until the round closes, so a flash loan can never be repaid in the same tx and simply aborts. To score fully, the stake must be locked for the full round</td>
+</tr>
+<tr>
+<td><strong>Stake recycling across rounds</strong></td>
+<td>Use the same tokens to score in two rounds at once, or pull them out mid-round and reuse them</td>
+<td>A <code>Building</code> is bound to one <code>round</code>; the grid clears at close, so a building scores in exactly one round. Stake can&#39;t be withdrawn while its round is open. Re-using the same tokens round after round (<code>rebuild</code>) is <strong>allowed and intended</strong>: one stake, one round at a time, paying full time-weighted lock each round. Staked tokens can&#39;t be redeemed for gold while locked</td>
+</tr>
+<tr>
+<td><strong>Sybil grid-squatting</strong></td>
+<td>Many wallets each take cheap cells to block rivals or dodge per-address limits</td>
+<td><strong>The locked stake is the anti-spam cost:</strong> every squatted cell ties up a full base stake for the whole round. Sybils dodge escalation and caps, but each split wallet <strong>loses the own-mine vein bonus</strong> (up to +60%) and the coordination value of clustered mines. Squatting poor cells scores ~nothing, so it&#39;s pure capital cost. Squatting rich cells is just playing. Overcrowding penalties apply to all mines regardless of owner</td>
+</tr>
+<tr>
+<td><strong>Whale dominance</strong></td>
+<td>A holder with 100× capital takes most of the grid every round</td>
+<td>Fixed stake per building (score isn&#39;t proportional to stake), escalation makes capital → buildings <strong>sub-linear</strong>, per-address caps, a finite 256-cell grid, and the pot is a fixed fee-funded amount, so the whale&#39;s return on capital falls as they crowd in. <strong>Skill stays dominant:</strong> two players with the same number of buildings are ranked purely by placement and timing</td>
+</tr>
+<tr>
+<td><strong>Stake-weighted score (if enabled)</strong></td>
+<td>&quot;Reinforce&quot; lets capital buy score directly</td>
+<td><strong>Off for V1 (D13).</strong> If ever enabled: square-root curve, max +20% per mine, so a 4× stake gets at most +20%, never 4×</td>
+</tr>
+<tr>
+<td><strong>Move griefing / cell-hopping</strong></td>
+<td>Rapidly moving buildings to block or crowd a rival&#39;s vein</td>
+<td>SUI fee into the pot per move + 30-min per-building cooldown + time-factor reset</td>
+</tr>
+<tr>
+<td><strong>Stuck stakes</strong></td>
+<td><code>close_round</code> never called (keeper down, bug)</td>
+<td>Permissionless close; keeper backstop; <strong>emergency demolish after <code>end_ms + 72h</code></strong> (stake back, no score)</td>
+</tr>
+<tr>
+<td><strong>Admin / upgrade taking stakes</strong></td>
+<td>An AdminCap or package upgrade drains locked tokens</td>
+<td>Stakes live in <strong>player-owned</strong> <code>Building</code> objects (<code>key</code> only), so only the owner can bring them into a tx. AdminCap has no path to them. <code>gold_game</code> restricted to <code>additive</code> after audit so <code>demolish</code> can&#39;t be rewritten (D4)</td>
+</tr>
+<tr>
+<td><strong>Pot farming via self-trades</strong></td>
+<td>Wash-trade to inflate the rewards pot, then win it</td>
+<td>Never profitable: a round trip pays ~2% pool fee (×2), and only ≈0.3% of buy volume reaches the pot</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="9-sources">9. Sources</h2>
+<ul>
+<li><a href="https://vicefun.com">https://vicefun.com</a> (live HTML, curl Oct 6 2026; <code>cmp</code> identical to <code>the-arena/index.html</code>)</li>
+<li>GitHub (read via <code>gh api</code>): <code>aidaonsui-collab/the-arena</code> (README.md, contracts/README.md, contracts/PUBLISHED.md, sources/lock.move, sources/launch.move, sources/bluefin.move, coin-template, keepers/README.md, keepers/src/jobs/convertBasketYield.ts), <code>gold-reserve</code> (README, docs/GOLD_VAULT_V2_SGOV_RATCHET.md), <code>reserve-vault</code> (README, src/ReserveVault.sol), <code>robots/contracts/moonbags_aida/UPGRADE_V14_BACKING_SPLIT.md</code></li>
+<li>v0.3 checks (local copies in <code>ref/arena/</code>): <code>launch.move</code> L1963–1993 (<code>mint_lock_supply</code> is <code>#[test_only]</code>; <code>burn_from_mint_lock</code> public), <code>lock.move</code> L61–68 and L724–734 (no public <code>Position</code> accessor on <code>BluefinPositionLock</code>), <code>bluefin.move</code> L187–196 (<code>instant_range</code>: lower = floor(ideal tick), upper = max tick, init at lower)</li>
+<li>Sui GraphQL <code>https://graphql.mainnet.sui.io/graphql</code>: XAUM package, DenyCapV2, RegulatedCoinMetadata, TreasuryCap, Bluefin pool <code>0x458f…</code></li>
+<li>Dexscreener API, XAUM pairs (Oct 6 2026)</li>
+<li>Pyth Hermes <code>/v2/price_feeds?query=XAU</code></li>
+<li>Sui docs: <a href="https://docs.sui.io/onchain-finance/fungible-tokens/coin">https://docs.sui.io/onchain-finance/fungible-tokens/coin</a> and …/regulated-tokens</li>
+<li>Matrixdock: <a href="https://matrixdock.gitbook.io/matrixdock-docs/english/gold-token-xaum/faq">https://matrixdock.gitbook.io/matrixdock-docs/english/gold-token-xaum/faq</a>, Sui launch blog (Aug 21 2025)</li>
+<li>Ketju Research XAUm controls summary: <a href="https://ketjuresearch.com/register/files/matrixdock-xaum/">https://ketjuresearch.com/register/files/matrixdock-xaum/</a> (third-party, unverified)</li>
+<li>Demo: <a href="https://lagoon-nova-berry-dove.grok.me">https://lagoon-nova-berry-dove.grok.me</a> (idle builder simulation; not on-chain economics)</li>
+</ul>
+
+</main>
+<footer class="foot">Draft scope. Nothing described here is deployed yet.</footer>
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+mermaid.initialize({ startOnLoad: true, theme: "dark" });
+</script>
+</body>
+</html>
