@@ -23,3 +23,7 @@ A gold-miner skill game token launching on [vicefun.com](https://vicefun.com) (S
 
 The landing page (`index.html`, `scope.html`) is a static site with no build step, deployed on Vercel.
 `scope.html` is pre-rendered from `docs/SCOPE.md` with `node scripts/render-scope.mjs` (needs `npm i marked`).
+
+## Playable demo (`/play/`)
+
+`play/` is a no-build, vanilla JS demo of the Mine tab (plus Vault, Leaderboard and Wallet tabs). Everything is simulated in the browser and saved in `localStorage`: no wallet, no chain, no real tokens. Rules follow `docs/SCOPE.md` §8 (v0.3, stake-to-build + redeemable vault). A 24h round is compressed to 4 minutes at 1×, with 10×/60× speed and an "End round" fast-forward.

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0a08">
+<title>Play the demo · The Gold Reserve</title>
+<meta name="description" content="Playable demo of The Gold Reserve Mine tab. Simulated tokens, no wallet, nothing on-chain.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ctext y=%2226%22 font-size=%2226%22%3E%E2%9B%8F%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/play/play.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gGold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff1b0"/><stop offset=".45" stop-color="#f0c24a"/><stop offset="1" stop-color="#9c6d12"/></linearGradient>
+    <radialGradient id="gCoin" cx=".4" cy=".35" r=".7"><stop offset="0" stop-color="#fff3c0"/><stop offset=".5" stop-color="#e8b53a"/><stop offset="1" stop-color="#8a5d0c"/></radialGradient>
+    <symbol id="i-mine" viewBox="0 0 32 32"><ellipse cx="16" cy="25" rx="13" ry="3.2" fill="#000" opacity=".35"/><path d="M4 25 C7 15 11 11 16 11 C21 11 25 15 28 25 Z" fill="currentColor"/><path d="M8 24 C10 17 13 14 16 14 C17 14 18 14.4 19 15" fill="none" stroke="#fff6cf" stroke-width="1.6" stroke-linecap="round" opacity=".75"/><circle cx="11" cy="22" r="2.1" fill="#fff3c0" opacity=".85"/><circle cx="19" cy="19" r="1.7" fill="#fff3c0" opacity=".7"/><circle cx="22.5" cy="23" r="1.5" fill="#fff3c0" opacity=".6"/></symbol>
+    <symbol id="i-shaft" viewBox="0 0 32 32"><ellipse cx="16" cy="28" rx="11" ry="2.6" fill="currentColor" opacity=".45"/><path d="M10 28 L13.5 6 h5 L22 28" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M12.6 12 L19.4 12 M11.7 18 L20.3 18 M10.8 24 L21.2 24 M13 12 L20 18 M19 12 L12 18 M12 18 L21 24 M20 18 L11 24" stroke="currentColor" stroke-width="1.2" opacity=".85"/><rect x="11.5" y="3.5" width="9" height="3.4" rx="1" fill="currentColor"/><circle cx="16" cy="27" r="2" fill="#fff3c0"/></symbol>
+    <symbol id="i-pick" viewBox="0 0 32 32"><path d="M6 27 L19 14" stroke="#c49a52" stroke-width="3" stroke-linecap="round"/><path d="M8 9 C14 4 23 4 28 10 C22 8 17 8 13 11 Z" fill="currentColor"/><path d="M15 9 L22 16" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-lens" viewBox="0 0 32 32"><circle cx="13" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="3"/><path d="M19 19 L27 27" stroke="currentColor" stroke-width="3.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-crown" viewBox="0 0 32 32"><path d="M4 11 L10 17 L16 7 L22 17 L28 11 L25 25 H7 Z" fill="url(#gGold)" stroke="#6b4a0b" stroke-width="1"/><rect x="7" y="25" width="18" height="3" rx="1" fill="url(#gGold)"/><circle cx="16" cy="19" r="1.8" fill="#fff6d0"/></symbol>
+    <symbol id="i-gem" viewBox="0 0 32 32"><path d="M8 6 H24 L30 13 L16 29 L2 13 Z" fill="url(#gGold)" stroke="#7a5510" stroke-width="1"/><path d="M2 13 H30 M8 6 L12 13 L16 29 L20 13 L24 6 M12 13 L16 6 L20 13" fill="none" stroke="#7a5510" stroke-width=".9" opacity=".8"/></symbol>
+    <symbol id="i-bar" viewBox="0 0 40 32"><path d="M4 24 L10 10 H30 L36 24 Z" fill="url(#gGold)" stroke="#6b4a0b" stroke-width="1.2"/><path d="M10 10 L13 16 H27 L30 10" fill="none" stroke="#fff3c0" stroke-width="1" opacity=".6"/><text x="20" y="21" font-size="6" text-anchor="middle" fill="#6b4a0b" font-weight="700" font-family="Georgia,serif">GOLD</text></symbol>
+    <symbol id="i-coin" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="url(#gCoin)" stroke="#7a5510"/><circle cx="16" cy="16" r="9" fill="none" stroke="#7a5510" opacity=".6"/><text x="16" y="21" font-size="13" text-anchor="middle" fill="#6b4a0b" font-weight="700" font-family="Georgia,serif">$</text></symbol>
+    <symbol id="i-coins" viewBox="0 0 32 32"><g fill="url(#gCoin)" stroke="#7a5510" stroke-width=".8"><ellipse cx="11" cy="24" rx="8" ry="3"/><ellipse cx="11" cy="20.5" rx="8" ry="3"/><ellipse cx="11" cy="17" rx="8" ry="3"/><ellipse cx="22" cy="25" rx="8" ry="3"/><ellipse cx="22" cy="21.5" rx="8" ry="3"/><ellipse cx="22" cy="18" rx="8" ry="3"/><ellipse cx="22" cy="14.5" rx="8" ry="3"/></g></symbol>
+    <symbol id="i-pie" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="#5a4521"/><path d="M16 16 L16 4 A12 12 0 0 1 27.4 19.7 Z" fill="url(#gGold)"/><path d="M16 16 L27.4 19.7 A12 12 0 0 1 8 25" fill="#c99a33"/></symbol>
+    <symbol id="i-vault" viewBox="0 0 32 32"><circle cx="16" cy="16" r="13" fill="#2a2214" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="16" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 5 V9 M16 23 V27 M5 16 H9 M23 16 H27" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="16" r="2.2" fill="currentColor"/></symbol>
+    <symbol id="i-podium" viewBox="0 0 32 32"><rect x="12" y="12" width="8" height="16" fill="currentColor"/><rect x="3" y="18" width="8" height="10" fill="currentColor" opacity=".75"/><rect x="21" y="21" width="8" height="7" fill="currentColor" opacity=".6"/><path d="M16 3 l1.6 3.3 3.6.5-2.6 2.5.6 3.6-3.2-1.7-3.2 1.7.6-3.6-2.6-2.5 3.6-.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 32 32"><rect x="3" y="8" width="26" height="19" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5 8 L22 3 L24 8" fill="none" stroke="currentColor" stroke-width="2"/><rect x="19" y="14" width="10" height="7" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 32 32"><path d="M16 3 L27 7 V15 C27 22 22 27 16 29 C10 27 5 22 5 15 V7 Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M11 16 L15 20 L22 12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="banner" role="note"><strong>Demo</strong> — simulated tokens, no wallet, nothing on-chain. <a class="hm" href="/">About</a><span class="sep hm">·</span><a class="hm" href="/scope.html">Scope</a><span class="sep">·</span><button id="resetBtn" type="button">Reset demo</button></div>
+
+<div class="app">
+  <header class="top">
+    <div class="brandbox"><span class="barico"><svg viewBox="0 0 40 32"><use href="#i-bar"/></svg></span><h1>The Gold Reserve</h1></div>
+    <div class="pill" title="Your free (unstaked) simulated $RESERVE"><svg viewBox="0 0 32 32"><use href="#i-coin"/></svg><b id="balTop">1,240</b><span>RESERVE</span></div>
+  </header>
+
+  <main>
+    <!-- MINE -->
+    <section class="tab active" id="tab-mine" data-tab="mine">
+      <div class="round card">
+        <svg class="crown" viewBox="0 0 32 32"><use href="#i-crown"/></svg>
+        <div class="rtxt">
+          <div class="rline"><b id="roundNo">Round 1</b> <span class="dim">- closes in</span> <b id="roundClock" class="mono">24:00:00</b></div>
+          <div class="pline">Prize pool <b id="potTop">0 SUI</b> <span class="dim" id="potRate"></span></div>
+        </div>
+        <div class="speed" role="group" aria-label="Demo speed">
+          <button data-speed="1" type="button">1×</button><button data-speed="10" type="button">10×</button><button data-speed="60" type="button">60×</button><button id="pauseBtn" type="button" title="Pause">❚❚</button><button id="skipBtn" type="button" title="Fast-forward to round close">End round ⏭</button>
+        </div>
+        <svg class="gem" viewBox="0 0 32 32"><use href="#i-gem"/></svg>
+      </div>
+
+      <div class="mine-layout">
+        <div class="boardcol">
+          <div class="board" id="board">
+            <div class="grid" id="grid"></div>
+            <svg class="veins" id="veins" viewBox="0 0 16 16" preserveAspectRatio="none"></svg>
+            <div class="tip" id="tip" hidden></div>
+          </div>
+          <div class="legend"><span><i class="lg heat"></i>richness</span><span><i class="lg fogk"></i>unsurveyed (estimate)</span><span><svg class="own"><use href="#i-mine"/></svg>yours</span><span><svg class="rival"><use href="#i-mine"/></svg>rivals</span><span><svg class="own"><use href="#i-shaft"/></svg>shaft (R2)</span></div>
+        </div>
+
+        <div class="side">
+          <div class="cellinfo card" id="cellInfo">Tap a cell to inspect it, then choose an action.</div>
+          <div class="stats">
+            <div class="stat card"><svg viewBox="0 0 32 32" class="gold"><use href="#i-pick"/></svg><div><span>Your score</span><b id="stScore">0</b></div></div>
+            <div class="stat card"><svg viewBox="0 0 32 32"><use href="#i-pie"/></svg><div><span>Est. share</span><b id="stShare">0%</b></div></div>
+            <div class="stat card"><svg viewBox="0 0 32 32"><use href="#i-coins"/></svg><div><span>Staked</span><b id="stStaked">0</b></div></div>
+          </div>
+          <div class="actions">
+            <button class="act card" id="actMine" type="button"><svg viewBox="0 0 32 32" class="gold"><use href="#i-pick"/></svg><span><b>Mine</b> - stake <em id="costMine">120</em></span></button>
+            <button class="act card" id="actShaft" type="button"><svg viewBox="0 0 32 32" class="gold"><use href="#i-shaft"/></svg><span><b>Shaft</b> - stake <em id="costShaft">280</em></span></button>
+            <button class="act card" id="actSurvey" type="button"><svg viewBox="0 0 32 32" class="gold"><use href="#i-lens"/></svg><span><b>Survey</b> - <em>40</em></span></button>
+          </div>
+          <p class="note"><svg viewBox="0 0 32 32"><use href="#i-shield"/></svg>Your stake comes back when you demolish after the round.</p>
+          <div id="settledBar"></div>
+          <button class="vaultbar card" id="vaultBar" type="button"><svg viewBox="0 0 32 32" class="gold"><use href="#i-vault"/></svg><span><b>Vault floor</b> - Redeem for gold</span><small id="vaultBarVal"></small><i>›</i></button>
+          <div class="card feedbox"><div class="fhead">Round activity <span class="dim">(game time)</span></div><ul id="feed" class="feed"></ul></div>
+          <details class="rules card">
+            <summary>How scoring works</summary>
+            <ul>
+              <li><b>Mine score</b> = richness × vein × crowding × shaft × time.</li>
+              <li><b>Vein:</b> +20% per orthogonally adjacent mine of yours, max +60%.</li>
+              <li><b>Crowding:</b> −15% per mine (anyone's) beyond 3 in its 3×3.</li>
+              <li><b>Shaft:</b> +25% per Vault Shaft within 2 cells (max 3), and that includes rivals' shafts boosting your mines and yours boosting theirs.</li>
+              <li><b>Time:</b> a mine placed with half the round left scores half. Moving restarts its clock.</li>
+              <li>Each extra building of a type costs +25% stake (caps: 24 mines, 6 shafts). First placer owns a cell.</li>
+              <li><b>Survey</b> (40, a fee into the prize pool) reveals exact richness in a 5×5 area. Otherwise you only see an estimate.</li>
+              <li>At close the prize pool splits pro-rata by score. Stakes stay locked until you demolish or rebuild.</li>
+            </ul>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- VAULT -->
+    <section class="tab" id="tab-vault" data-tab="vault">
+      <div class="vgrid">
+        <div class="card vhero">
+          <div class="vk">XAUm in the vault</div>
+          <div class="vbig"><b id="vXaum">0</b> <span>XAUm</span></div>
+          <div class="dim" id="vUsd"></div>
+          <svg class="spark" id="vSpark" viewBox="0 0 300 70" preserveAspectRatio="none"></svg>
+          <div class="dim small">Backing per 1,000 RESERVE over time (simulated)</div>
+        </div>
+        <div class="card vstats">
+          <div><span>Backing per 1,000 RESERVE</span><b id="vBacking"></b></div>
+          <div><span>Circulating supply</span><b id="vCirc"></b></div>
+          <div><span>Your free RESERVE</span><b id="vYour"></b></div>
+          <div><span>Your redeemable value</span><b id="vYourVal"></b></div>
+          <div><span>Your XAUm</span><b id="vYourX"></b></div>
+        </div>
+        <div class="card redeem">
+          <h3>Redeem for gold</h3>
+          <p class="dim small">Burn $RESERVE and receive your pro-rata share of the vault's XAUm. The 1.5% fee stays in the vault, so backing per token rises for everyone who stays.</p>
+          <div class="rrow"><input id="rAmt" type="number" min="0" step="1" inputmode="numeric" placeholder="Amount of RESERVE"><button id="rMax" type="button" class="ghost">Max</button></div>
+          <div class="quote" id="rQuote"></div>
+          <button id="rBtn" type="button" class="primary">Redeem for gold</button>
+          <div class="caps">
+            <div class="capline"><span>Today's global cap (3% of vault / 24h)</span><b id="capDay"></b></div>
+            <div class="bar"><i id="capBar"></i></div>
+            <div class="capline"><span>Per-transaction cap (1% of vault)</span><b id="capTx"></b></div>
+          </div>
+          <p class="dim small">In the real design redemptions open 7 days after launch once the vault holds about 1 XAUm. The demo skips that gate. Staked tokens can't be redeemed until you demolish. Gameplay never touches the vault: it only grows from the reserve slice of trading fees.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- LEADERBOARD -->
+    <section class="tab" id="tab-board" data-tab="board">
+      <div class="card">
+        <h3 id="lbTitle">Current round</h3>
+        <div class="tablewrap"><table class="lb"><thead><tr><th>#</th><th>Miner</th><th>Mines</th><th>Shafts</th><th>Score</th><th>Share</th><th>Est. payout</th></tr></thead><tbody id="lbBody"></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>Past rounds</h3>
+        <div id="pastList" class="past"></div>
+      </div>
+    </section>
+
+    <!-- WALLET -->
+    <section class="tab" id="tab-wallet" data-tab="wallet">
+      <div class="wgrid">
+        <div class="card wb"><span>RESERVE (free)</span><b id="wRes"></b></div>
+        <div class="card wb"><span>Staked this round</span><b id="wStaked"></b></div>
+        <div class="card wb"><span>Settled, ready to demolish</span><b id="wSettled"></b><button id="wDemolish" type="button" class="primary sm">Demolish all</button></div>
+        <div class="card wb"><span>Claimable SUI</span><b id="wClaim"></b><button id="wClaimBtn" type="button" class="primary sm">Claim</button></div>
+        <div class="card wb"><span>SUI</span><b id="wSui"></b></div>
+        <div class="card wb"><span>XAUm</span><b id="wX"></b></div>
+      </div>
+      <div class="card">
+        <h3>History</h3>
+        <ul id="histList" class="hist"></ul>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom" aria-label="Sections">
+    <button data-go="mine" class="on" type="button"><svg viewBox="0 0 32 32"><use href="#i-pick"/></svg><span>Mine</span></button>
+    <button data-go="vault" type="button"><svg viewBox="0 0 32 32"><use href="#i-vault"/></svg><span>Vault</span></button>
+    <button data-go="board" type="button"><svg viewBox="0 0 32 32"><use href="#i-podium"/></svg><span>Leaderboard</span></button>
+    <button data-go="wallet" type="button"><svg viewBox="0 0 32 32"><use href="#i-wallet"/></svg><span>Wallet</span></button>
+  </nav>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="modal" class="modal" hidden><div class="mbox card" id="mbox"></div></div>
+
+<script src="/play/play.js"></script>
+</body>
+</html>
